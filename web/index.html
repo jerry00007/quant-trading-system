@@ -1215,7 +1215,11 @@ async function api(url, options = {}) {
     });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-      throw new Error(err.detail || '请求失败');
+      let msg = err.detail || '请求失败';
+      if (Array.isArray(msg)) {
+        msg = msg.map(e => e.msg || JSON.stringify(e)).join('; ');
+      }
+      throw new Error(msg);
     }
     return await resp.json();
   } catch (e) {
@@ -1358,7 +1362,7 @@ function renderSignals(pending, fresh) {
       html += '    <input type="number" class="input input-sm" style="width:120px" id="confirmShares_' + s.id + '" value="' + (s.shares || 0) + '" min="0">';
       html += '  </div>';
       html += '  <div class="confirm-row">';
-      html += '    <button class="btn btn-primary btn-sm" onclick="confirmSignal(' + s.id + ', \'' + s.action + '\')">提交确认</button>';
+      html += '    <button class="btn btn-primary btn-sm" id="confirmBtn_' + s.id + '" onclick="confirmSignal(' + s.id + ', \'' + s.action + '\')">提交确认</button>';
       html += '    <button class="btn btn-sm" onclick="toggleConfirmForm(' + s.id + ')">取消</button>';
       html += '  </div>';
       html += '</div>';
@@ -1382,6 +1386,9 @@ async function confirmSignal(signalId, action) {
   if (!price || price <= 0) { showToast('请输入有效价格', 'error'); return; }
   if (action === 'buy' && (!shares || shares <= 0)) { showToast('买入数量必须大于0', 'error'); return; }
 
+  const btn = document.getElementById('confirmBtn_' + signalId);
+  if (btn) { btn.disabled = true; btn.textContent = '处理中...'; }
+
   try {
     await api('/api/signals/confirm', {
       method: 'POST',
@@ -1389,12 +1396,14 @@ async function confirmSignal(signalId, action) {
         signal_id: signalId,
         action: 'executed',
         actual_price: price,
-        actual_shares: shares || 0
+        actual_shares: shares > 0 ? shares : null
       })
     });
     showToast('信号已确认执行', 'success');
     loadDashboard();
-  } catch (e) {}
+  } catch (e) {} finally {
+    if (btn) { btn.disabled = false; btn.textContent = '提交确认'; }
+  }
 }
 
 async function skipSignal(signalId) {
@@ -1474,14 +1483,19 @@ function toggleHoldingDetail(symbol) {
 }
 
 async function removeHolding(symbol, strategy) {
-  if (!confirm) return; // fallback
+  if (!confirm('确定要清仓卖出 (' + symbol + ')?')) return;
+  const btn = event ? event.target : null;
+  if (btn) { btn.disabled = true; btn.textContent = '删除中...'; }
   try {
-    await api('/api/holdings/' + encodeURIComponent(symbol) + '?strategy=' + encodeURIComponent(strategy), {
+    const data = await api('/api/holdings/' + encodeURIComponent(symbol) + '?strategy=' + encodeURIComponent(strategy), {
       method: 'DELETE'
     });
-    showToast('已删除持仓: ' + symbol, 'success');
+    const msg = data.sold_shares ? ('已清仓 ' + symbol + ': ' + data.sold_shares + '股 @ ¥' + (data.sold_price || '--')) : ('已删除持仓: ' + symbol);
+    showToast(msg, 'success');
     loadDashboard();
-  } catch (e) {}
+  } catch (e) {} finally {
+    if (btn) { btn.disabled = false; btn.textContent = '✕'; }
+  }
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1702,6 +1716,8 @@ async function loadHistory() {
 // Manual Trade
 // ════════════════════════════════════════════════════════════════
 async function submitManualTrade() {
+  const btn = event ? event.target : document.querySelector('button[onclick="submitManualTrade()"]');
+  if (btn) { btn.disabled = true; btn.textContent = '提交中...'; }
   const symbol = document.getElementById('tradeSymbol').value.trim();
   const name = document.getElementById('tradeName').value.trim();
   const action = document.getElementById('tradeAction').value;
@@ -1710,10 +1726,10 @@ async function submitManualTrade() {
   const date = document.getElementById('tradeDate').value;
   const reason = document.getElementById('tradeReason').value.trim() || '手动操作';
 
-  if (!symbol) { showToast('请输入证券代码', 'error'); return; }
-  if (!shares || shares <= 0) { showToast('请输入有效数量', 'error'); return; }
-  if (!price || price <= 0) { showToast('请输入有效价格', 'error'); return; }
-  if (!date) { showToast('请选择日期', 'error'); return; }
+  if (!symbol) { showToast('请输入证券代码', 'error'); if (btn) { btn.disabled = false; btn.textContent = '提交交易'; } return; }
+  if (!shares || shares <= 0) { showToast('请输入有效数量', 'error'); if (btn) { btn.disabled = false; btn.textContent = '提交交易'; } return; }
+  if (!price || price <= 0) { showToast('请输入有效价格', 'error'); if (btn) { btn.disabled = false; btn.textContent = '提交交易'; } return; }
+  if (!date) { showToast('请选择日期', 'error'); if (btn) { btn.disabled = false; btn.textContent = '提交交易'; } return; }
 
   try {
     await api('/api/trades', {
@@ -1728,7 +1744,9 @@ async function submitManualTrade() {
     document.getElementById('tradePrice').value = '';
     document.getElementById('tradeReason').value = '';
     loadDashboard();
-  } catch (e) {}
+  } catch (e) {} finally {
+    if (btn) { btn.disabled = false; btn.textContent = '提交交易'; }
+  }
 }
 
 // ════════════════════════════════════════════════════════════════

@@ -173,7 +173,7 @@ def detect_market_regime(df: pd.DataFrame, date: str = None) -> RegimeResult:
     if ma_alignment == "bullish":
         trend_score += 0.3 * alignment_score
     elif ma_alignment == "bearish":
-        trend_score += 0.15 * alignment_score
+        trend_score -= 0.15 * alignment_score
 
     if vol_rank > 0.7:
         trend_score += 0.2
@@ -188,6 +188,7 @@ def detect_market_regime(df: pd.DataFrame, date: str = None) -> RegimeResult:
         regime = REGIME_RANGING
 
     confidence = min(abs(trend_score - 0.375) / 0.375, 1.0)
+    confidence = max(confidence, 0.1)
 
     return RegimeResult(
         regime=regime,
@@ -200,10 +201,19 @@ def detect_market_regime(df: pd.DataFrame, date: str = None) -> RegimeResult:
     )
 
 
+_INDEX_TO_ETF = {
+    "000300": "sz159919",   # 沪深300
+    "000905": "sz510500",   # 中证500
+    "000852": "sz159915",   # 中证1000
+}
+
+
 def get_regime_with_params(conn, index_code: str = "000300") -> RegimeResult:
+    etf_code = _INDEX_TO_ETF.get(index_code, "sz159919")
     df = pd.read_sql(
-        f"SELECT * FROM etf_daily_quotes WHERE etf_code='sz159919' ORDER BY trade_date",
-        conn
+        "SELECT * FROM etf_daily_quotes WHERE etf_code=? ORDER BY trade_date",
+        conn,
+        params=(etf_code,)
     )
     if df.empty or len(df) < 100:
         return RegimeResult(

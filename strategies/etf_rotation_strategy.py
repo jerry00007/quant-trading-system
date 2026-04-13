@@ -88,7 +88,7 @@ class ETFRotationStrategy:
             close = subset["close"].values
             ret = (close[-1] - close[-self.lookback - 1]) / close[-self.lookback - 1]
 
-            if np.isnan(ret):
+            if not np.isfinite(ret):
                 continue
 
             rows.append({
@@ -242,16 +242,18 @@ class ETFRotationStrategy:
                 open_price = self._get_open_price(etf_data, etf_code, date)
                 if open_price is None or add_shares < 100:
                     continue
-                cost = add_shares * open_price * (1 + COMMISSION_RATE)
-                if cost <= capital:
-                    capital -= cost
+                cost_with_commission = add_shares * open_price * (1 + COMMISSION_RATE)
+                if cost_with_commission <= capital:
+                    capital -= cost_with_commission
                     if etf_code in holdings:
                         h = holdings[etf_code]
-                        old_cost = h["shares"] * h["entry_price"]
+                        old_cost_basis = h["shares"] * h["entry_price"]
+                        add_cost_basis = add_shares * open_price
                         new_total_shares = h["shares"] + add_shares
+                        entry_price = (old_cost_basis + add_cost_basis) / new_total_shares
                         holdings[etf_code] = {
                             "shares": new_total_shares,
-                            "entry_price": (old_cost + cost) / new_total_shares,
+                            "entry_price": entry_price,
                             "entry_date": h["entry_date"],
                         }
                     else:
@@ -399,10 +401,19 @@ class ETFRotationStrategy:
             wins = sum(1 for r in returns if r > 0)
             win_rate = wins / len(returns) * 100
             avg_return = float(np.mean(returns))
-            sharpe = float((np.mean(returns) / (np.std(returns) + 0.001)) * np.sqrt(252)) if len(returns) > 1 else 0.0
         else:
             win_rate = 0.0
             avg_return = 0.0
+
+        if len(portfolio_values) > 2:
+            pv = np.array(portfolio_values)
+            daily_rets = np.diff(pv) / pv[:-1]
+            daily_rets = daily_rets[np.isfinite(daily_rets)]
+            if len(daily_rets) > 1 and np.std(daily_rets) > 0:
+                sharpe = float(np.mean(daily_rets) / np.std(daily_rets) * np.sqrt(252))
+            else:
+                sharpe = 0.0
+        else:
             sharpe = 0.0
 
         if portfolio_values:
@@ -542,9 +553,20 @@ def grid_search_etf(etf_data: Dict[str, pd.DataFrame]):
     top_ks = [2, 3, 4, 5]
     rebalance_days_list = [10, 15, 20, 30, 40]
 
+    all_dates: set = set()
+    for df in etf_data.values():
+        all_dates.update(df['trade_date'].tolist())
+    sorted_dates = sorted(all_dates)
+    split_idx = int(len(sorted_dates) * 0.7)
+    split_date = sorted_dates[split_idx]
+
+    train_data = {k: df[df['trade_date'] <= split_date].copy() for k, df in etf_data.items()}
+    test_data = {k: df[df['trade_date'] > split_date].copy() for k, df in etf_data.items()}
+
     total_combos = len(lookbacks) * len(top_ks) * len(rebalance_days_list)
     print(f"\n{'=' * 70}")
-    print(f"  参数网格搜索 — 共 {total_combos} 种组合")
+    print(f"  参数网格搜索 — 共 {total_combos} 种组合 (70/30 train/test split)")
+    print(f"  分割日期: {split_date}")
     print(f"{'=' * 70}")
 
     results: List[Dict[str, object]] = []
@@ -559,16 +581,19 @@ def grid_search_etf(etf_data: Dict[str, pd.DataFrame]):
             stop_loss=0.08,
             take_profit=0.30,
         )
-        result = strategy.run_rotation_backtest(etf_data)
+        train_result = strategy.run_rotation_backtest(train_data)
+        test_result = strategy.run_rotation_backtest(test_data)
 
         results.append({
             "lookback": lookback,
             "top_k": top_k,
             "rebalance": rebalance_days,
-            "total_return": result["total_return"],
-            "sharpe": result["sharpe"],
-            "max_drawdown": result["max_drawdown"],
-            "cagr": result["cagr"],
+            "train_return": train_result["total_return"],
+            "test_return": test_result["total_return"],
+            "total_return": test_result["total_return"],
+            "sharpe": test_result["sharpe"],
+            "max_drawdown": test_result["max_drawdown"],
+            "cagr": test_result["cagr"],
         })
 
         if combo_count % 20 == 0 or combo_count == total_combos:
@@ -576,26 +601,27 @@ def grid_search_etf(etf_data: Dict[str, pd.DataFrame]):
 
     results.sort(key=lambda x: x["total_return"], reverse=True)
 
-    print(f"\n{'=' * 90}")
-    print(f"  参数网格搜索结果 (按总收益排序)")
-    print(f"{'=' * 90}")
+    print(f"\n{'=' * 100}")
+    print(f"  参数网格搜索结果 (按测试集收益排序)")
+    print(f"{'=' * 100}")
     print(f"  {'排名':>4}  {'lookback':>8}  {'top_k':>5}  {'rebalance':>9}  "
-          f"{'总收益':>8}  {'夏普':>6}  {'最大回撤':>8}  {'年化':>8}")
-    print("  " + "-" * 82)
+          f"{'训练收益':>8}  {'测试收益':>8}  {'夏普':>6}  {'最大回撤':>8}  {'年化':>8}")
+    print("  " + "-" * 92)
 
     for i, r in enumerate(results):
         marker = " ★" if i == 0 else "  "
+        train_ret = r.get('train_return', 0)
         print(f"{marker}{i+1:>3}  {r['lookback']:>8}  {r['top_k']:>5}  {r['rebalance']:>9}  "
-              f"{r['total_return']:>+7.1f}%  {r['sharpe']:>6.2f}  "
+              f"{train_ret:>+7.1f}%  {r['total_return']:>+7.1f}%  {r['sharpe']:>6.2f}  "
               f"{r['max_drawdown']:>7.1f}%  {r['cagr']:>+7.1f}%")
 
     best = results[0]
-    print(f"\n  ★ 最优参数组合:")
+    print(f"\n  ★ 最优参数组合 (测试集):")
     print(f"    lookback={best['lookback']}, top_k={best['top_k']}, "
           f"rebalance={best['rebalance']}")
-    print(f"    总收益: {best['total_return']:+.1f}%  夏普: {best['sharpe']:.2f}  "
-          f"最大回撤: {best['max_drawdown']:.1f}%  年化: {best['cagr']:+.1f}%")
-    print("=" * 90)
+    print(f"    训练收益: {best.get('train_return', 0):+.1f}%  测试收益: {best['total_return']:+.1f}%  "
+          f"夏普: {best['sharpe']:.2f}  最大回撤: {best['max_drawdown']:.1f}%  年化: {best['cagr']:+.1f}%")
+    print("=" * 100)
 
 
 def main():

@@ -16,7 +16,9 @@ PROJECT_ROOT = Path(__file__).parent.parent
 DB_PATH = PROJECT_ROOT / "data" / "sqlite" / "stock_data.db"
 
 TRAIN_WINDOW = 500
-HOLDING_PERIOD = 20
+# Holding period: model predicts 1-day direction, hold for a few days
+# to capture momentum while avoiding excessive turnover
+HOLDING_PERIOD = 5
 TOP_N = 10
 FEATURE_COLS = [
     "momentum_20", "volatility_20", "return_5d", "volatility_5d",
@@ -74,8 +76,11 @@ def _compute_features_inner(df: pd.DataFrame, lookback: int = 20) -> pd.DataFram
     rs = np.where(avg_loss > 1e-8, avg_gain / avg_loss, 100.0)
     rsi_14 = 100.0 - 100.0 / (1.0 + rs)
 
+    # label[i] = whether close[i+1] > close[i], i.e., next day's return
+    # Avoids data leakage: features at row i only use data up to close[i]
     label = np.zeros(n)
-    label[1:] = np.where(daily_ret[1:] > 0, 1.0, 0.0)
+    label[:-1] = np.where(daily_ret[1:] > 0, 1.0, 0.0)
+    label[-1] = np.nan  # no label for last row
 
     result = pd.DataFrame({
         "trade_date": df["trade_date"].values,
@@ -156,8 +161,8 @@ def generate_daily_stock_picks(conn, as_of_date: str = None, top_n: int = TOP_N)
 
     for ts_code in stocks:
         df = pd.read_sql(
-            f"SELECT * FROM daily_quotes WHERE ts_code='{ts_code}' AND trade_date <= '{as_of_date}' ORDER BY trade_date",
-            conn
+            "SELECT * FROM daily_quotes WHERE ts_code=? AND trade_date <= ? ORDER BY trade_date",
+            conn, params=(ts_code, as_of_date)
         )
         if len(df) < TRAIN_WINDOW + 50:
             continue
@@ -182,8 +187,8 @@ def run_ml_backtest_for_stock(conn, ts_code: str, start_date: str = None,
                                end_date: str = None,
                                initial_capital: float = 100_000) -> Optional[dict]:
     df = pd.read_sql(
-        f"SELECT * FROM daily_quotes WHERE ts_code='{ts_code}' ORDER BY trade_date",
-        conn
+        "SELECT * FROM daily_quotes WHERE ts_code=? ORDER BY trade_date",
+        conn, params=(ts_code,)
     )
     if start_date:
         df = df[df["trade_date"] >= start_date]

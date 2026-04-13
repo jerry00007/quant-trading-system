@@ -14,6 +14,13 @@ class BaseSignal:
     reason: str
 
 
+def _next_open_price(df, i):
+    """获取下一根K线的开盘价，用于消除前视偏差。"""
+    if i + 1 < len(df):
+        return df["open"].iloc[i + 1], df["trade_date"].iloc[i + 1]
+    return None, None
+
+
 class DualMAStrategy:
     def __init__(self, fast_period: int = 5, slow_period: int = 20, stop_pct: float = 0.05):
         self.fast_period = fast_period
@@ -40,29 +47,38 @@ class DualMAStrategy:
 
             if self.position is None:
                 if fast_ma.iloc[i - 1] <= slow_ma.iloc[i - 1] and fast_ma.iloc[i] > slow_ma.iloc[i]:
-                    signals.append(BaseSignal(
-                        ts_code=row["ts_code"], trade_date=row["trade_date"],
-                        action="buy", price=p,
-                        reason=f"金叉 MA{self.fast_period}>MA{self.slow_period}"
-                    ))
-                    self.position = "buy"
-                    self.entry_price = p
+                    nx_price, nx_date = _next_open_price(df, i)
+                    if nx_price is not None:
+                        signals.append(BaseSignal(
+                            ts_code=row["ts_code"], trade_date=nx_date,
+                            action="buy", price=nx_price,
+                            reason=f"金叉 MA{self.fast_period}>MA{self.slow_period}"
+                        ))
+                        self.position = "buy"
+                        self.entry_price = nx_price
             else:
                 pnl = (p - self.entry_price) / self.entry_price
                 sell = False
                 reason = ""
+                exec_price = p
+                exec_date = row["trade_date"]
 
                 if pnl <= -self.stop_pct:
                     sell = True
                     reason = f"止损 {pnl*100:+.1f}%"
+                    exec_price = p * 0.999  # 止损滑点
                 elif fast_ma.iloc[i - 1] >= slow_ma.iloc[i - 1] and fast_ma.iloc[i] < slow_ma.iloc[i]:
-                    sell = True
-                    reason = f"死叉 MA{self.fast_period}<MA{self.slow_period}"
+                    nx_price, nx_date = _next_open_price(df, i)
+                    if nx_price is not None:
+                        sell = True
+                        reason = f"死叉 MA{self.fast_period}<MA{self.slow_period}"
+                        exec_price = nx_price
+                        exec_date = nx_date
 
                 if sell:
                     signals.append(BaseSignal(
-                        ts_code=row["ts_code"], trade_date=row["trade_date"],
-                        action="sell", price=p, reason=reason
+                        ts_code=row["ts_code"], trade_date=exec_date,
+                        action="sell", price=exec_price, reason=reason
                     ))
                     self.position = None
                     self.entry_price = None
@@ -98,32 +114,38 @@ class BollingerBandStrategy:
 
             if self.position is None:
                 if p <= lower.iloc[i]:
-                    signals.append(BaseSignal(
-                        ts_code=row["ts_code"], trade_date=row["trade_date"],
-                        action="buy", price=p,
-                        reason=f"触及下轨 布林带({self.period},{self.std_mult})"
-                    ))
-                    self.position = "buy"
-                    self.entry_price = p
+                    nx_price, nx_date = _next_open_price(df, i)
+                    if nx_price is not None:
+                        signals.append(BaseSignal(
+                            ts_code=row["ts_code"], trade_date=nx_date,
+                            action="buy", price=nx_price,
+                            reason=f"触及下轨 布林带({self.period},{self.std_mult})"
+                        ))
+                        self.position = "buy"
+                        self.entry_price = nx_price
             else:
                 pnl = (p - self.entry_price) / self.entry_price
                 sell = False
                 reason = ""
+                exec_price = p
+                exec_date = row["trade_date"]
 
                 if pnl <= -self.stop_pct:
                     sell = True
                     reason = f"止损 {pnl*100:+.1f}%"
+                    exec_price = p * 0.999  # 止损滑点
                 elif p >= upper.iloc[i]:
-                    sell = True
-                    reason = f"触及上轨 {pnl*100:+.1f}%"
-                elif p >= ma.iloc[i]:
-                    sell = True
-                    reason = f"回归中轨 {pnl*100:+.1f}%"
+                    nx_price, nx_date = _next_open_price(df, i)
+                    if nx_price is not None:
+                        sell = True
+                        reason = f"触及上轨 {pnl*100:+.1f}%"
+                        exec_price = nx_price
+                        exec_date = nx_date
 
                 if sell:
                     signals.append(BaseSignal(
-                        ts_code=row["ts_code"], trade_date=row["trade_date"],
-                        action="sell", price=p, reason=reason
+                        ts_code=row["ts_code"], trade_date=exec_date,
+                        action="sell", price=exec_price, reason=reason
                     ))
                     self.position = None
                     self.entry_price = None
@@ -142,9 +164,11 @@ class RSIStrategy:
 
     def _rsi(self, close, period):
         delta = close.diff()
-        gain = delta.where(delta > 0, 0).rolling(period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
-        rs = gain / (loss + 0.001)
+        gain = delta.where(delta > 0, 0.0)
+        loss = (-delta.where(delta < 0, 0.0))
+        avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
+        rs = avg_gain / (avg_loss + 1e-10)
         return 100 - (100 / (1 + rs))
 
     def calculate_signals(self, df: pd.DataFrame) -> List[BaseSignal]:
@@ -164,29 +188,38 @@ class RSIStrategy:
 
             if self.position is None:
                 if rsi.iloc[i - 1] < self.oversold and rsi.iloc[i] >= self.oversold:
-                    signals.append(BaseSignal(
-                        ts_code=row["ts_code"], trade_date=row["trade_date"],
-                        action="buy", price=p,
-                        reason=f"RSI超卖回升 RSI={rsi.iloc[i]:.0f}"
-                    ))
-                    self.position = "buy"
-                    self.entry_price = p
+                    nx_price, nx_date = _next_open_price(df, i)
+                    if nx_price is not None:
+                        signals.append(BaseSignal(
+                            ts_code=row["ts_code"], trade_date=nx_date,
+                            action="buy", price=nx_price,
+                            reason=f"RSI超卖回升 RSI={rsi.iloc[i]:.0f}"
+                        ))
+                        self.position = "buy"
+                        self.entry_price = nx_price
             else:
                 pnl = (p - self.entry_price) / self.entry_price
                 sell = False
                 reason = ""
+                exec_price = p
+                exec_date = row["trade_date"]
 
                 if pnl <= -self.stop_pct:
                     sell = True
                     reason = f"止损 {pnl*100:+.1f}%"
+                    exec_price = p * 0.999  # 止损滑点
                 elif rsi.iloc[i - 1] > self.overbought and rsi.iloc[i] <= self.overbought:
-                    sell = True
-                    reason = f"RSI超买回落 RSI={rsi.iloc[i]:.0f}"
+                    nx_price, nx_date = _next_open_price(df, i)
+                    if nx_price is not None:
+                        sell = True
+                        reason = f"RSI超买回落 RSI={rsi.iloc[i]:.0f}"
+                        exec_price = nx_price
+                        exec_date = nx_date
 
                 if sell:
                     signals.append(BaseSignal(
-                        ts_code=row["ts_code"], trade_date=row["trade_date"],
-                        action="sell", price=p, reason=reason
+                        ts_code=row["ts_code"], trade_date=exec_date,
+                        action="sell", price=exec_price, reason=reason
                     ))
                     self.position = None
                     self.entry_price = None

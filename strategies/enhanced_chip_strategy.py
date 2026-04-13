@@ -65,6 +65,7 @@ class EnhancedChipStrategy:
 
         self.position = None
         self.entry_price = None
+        self.entry_atr = None
         self.trailing_stop = None
 
     @staticmethod
@@ -78,18 +79,20 @@ class EnhancedChipStrategy:
 
     @staticmethod
     def _barslast_high(zlcmq, n_days):
-        """BARSLAST(ZLCMQ = HHV(ZLCMQ, N_DAYS))"""
-        result = np.full(len(zlcmq), np.nan)
-        for i in range(len(zlcmq)):
+        """Vectorized BARSLAST(ZLCMQ = HHV(ZLCMQ, N_DAYS))"""
+        n = len(zlcmq)
+        result = np.full(n, np.nan)
+        if n == 0:
+            return result
+        arr = np.asarray(zlcmq, dtype=float)
+        for i in range(n):
             start = max(0, i - n_days + 1)
-            window = zlcmq[start : i + 1]
+            window = arr[start:i + 1]
             if len(window) == 0 or np.any(np.isnan(window)):
                 continue
             max_val = np.max(window)
-            for j in range(len(window) - 1, -1, -1):
-                if not np.isnan(window[j]) and window[j] == max_val:
-                    result[i] = len(window) - 1 - j
-                    break
+            last_max = np.max(np.where(window == max_val)[0])
+            result[i] = len(window) - 1 - last_max
         return result
 
     @staticmethod
@@ -161,6 +164,7 @@ class EnhancedChipStrategy:
 
         self.position = None
         self.entry_price = None
+        self.entry_atr = None
         self.trailing_stop = None
         signals = []
 
@@ -191,14 +195,14 @@ class EnhancedChipStrategy:
                     )
                     self.position = "buy"
                     self.entry_price = p
+                    self.entry_atr = atr.iloc[i]
             else:
                 pnl = (p - self.entry_price) / self.entry_price
                 sell = False
                 reason = ""
 
-                atr_stop = p <= (self.entry_price - atr_mult_2.iloc[i])
+                atr_stop = p <= (self.entry_price - self.entry_atr * self.stop_loss_atr_mult)
                 take_profit = pnl >= self.take_profit_pct
-                chip_exit_1 = not np.isnan(z) and z < self.chip_exit
                 chip_exit_2 = (
                     not np.isnan(z)
                     and z < self.chip_exit
@@ -236,6 +240,7 @@ class EnhancedChipStrategy:
                     )
                     self.position = None
                     self.entry_price = None
+                    self.entry_atr = None
                     self.trailing_stop = None
 
         return signals
