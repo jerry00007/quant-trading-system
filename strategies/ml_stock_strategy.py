@@ -26,7 +26,11 @@ FEATURE_COLS = [
 
 
 def compute_features(df: pd.DataFrame, lookback: int = 20) -> pd.DataFrame:
-    np.seterr(divide='ignore', invalid='ignore')
+    with np.errstate(divide='ignore', invalid='ignore'):
+        return _compute_features_inner(df, lookback)
+
+
+def _compute_features_inner(df: pd.DataFrame, lookback: int = 20) -> pd.DataFrame:
     df = df.sort_values("trade_date").reset_index(drop=True)
 
     close = df["close"].values.astype(float)
@@ -92,7 +96,6 @@ def compute_features(df: pd.DataFrame, lookback: int = 20) -> pd.DataFrame:
     })
 
     result = result.replace([np.inf, -np.inf], 0.0).fillna(0)
-    np.seterr(divide='warn', invalid='warn')
     return result
 
 

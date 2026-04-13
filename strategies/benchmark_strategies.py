@@ -113,12 +113,12 @@ class BollingerBandStrategy:
                 if pnl <= -self.stop_pct:
                     sell = True
                     reason = f"止损 {pnl*100:+.1f}%"
-                elif p >= ma.iloc[i]:
-                    sell = True
-                    reason = f"回归中轨 {pnl*100:+.1f}%"
                 elif p >= upper.iloc[i]:
                     sell = True
                     reason = f"触及上轨 {pnl*100:+.1f}%"
+                elif p >= ma.iloc[i]:
+                    sell = True
+                    reason = f"回归中轨 {pnl*100:+.1f}%"
 
                 if sell:
                     signals.append(BaseSignal(

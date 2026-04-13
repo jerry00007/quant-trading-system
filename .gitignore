@@ -46,3 +46,8 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*

@@ -9,7 +9,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import numpy as np
 import pandas as pd
@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 PROJECT_ROOT = Path(__file__).parent.parent
 DB_PATH = PROJECT_ROOT / "data" / "sqlite" / "stock_data.db"
@@ -137,6 +137,12 @@ def _get_db_conn():
     return sqlite3.connect(str(DB_PATH))
 
 
+def _get_cash_balance(portfolio_conn) -> float:
+    """Get actual cash balance from ledger."""
+    row = portfolio_conn.execute("SELECT COALESCE(SUM(amount), 0) FROM cash_ledger").fetchone()
+    return PORTFOLIO_CONFIG["initial_capital"] + (row[0] if row else 0)
+
+
 # ── Signal Generation ────────────────────────────────────────────
 
 def _get_latest_trading_date(conn) -> Optional[str]:
@@ -167,16 +173,23 @@ def _generate_etf_signals(conn, as_of_date: str = None) -> list:
     top_etfs = momentum_df.head(strategy.top_k)["etf_code"].tolist()
 
     portfolio_conn = _get_portfolio_conn()
-    current_holdings_rows = portfolio_conn.execute(
-        "SELECT symbol, shares FROM holdings WHERE strategy='etf_rotation'"
-    ).fetchall()
-    portfolio_conn.close()
+    try:
+        current_holdings_rows = portfolio_conn.execute(
+            "SELECT symbol, shares FROM holdings WHERE strategy='etf_rotation'"
+        ).fetchall()
+    finally:
+        portfolio_conn.close()
 
     current_holdings = {row[0]: row[1] for row in current_holdings_rows}
 
     # Calculate available cash for ETF allocation
-    initial = PORTFOLIO_CONFIG["initial_capital"]
-    etf_budget = initial * PORTFOLIO_CONFIG["etf_allocation"]
+    _pc = _get_portfolio_conn()
+    try:
+        actual_cash = _get_cash_balance(_pc)
+    finally:
+        _pc.close()
+    etf_budget = min(PORTFOLIO_CONFIG["initial_capital"] * PORTFOLIO_CONFIG["etf_allocation"], actual_cash * 0.8)
+    etf_budget = max(etf_budget, 0)
     existing_etf_value = 0.0
     for sym, shrs in current_holdings.items():
         price_row = conn.execute(
@@ -247,15 +260,15 @@ def _generate_etf_signals(conn, as_of_date: str = None) -> list:
 
 def _compute_portfolio_metrics(conn) -> dict:
     portfolio_conn = _get_portfolio_conn()
-    holdings = portfolio_conn.execute("SELECT symbol, name, shares, entry_price, entry_date, strategy FROM holdings").fetchall()
-    trades = portfolio_conn.execute("SELECT symbol, action, shares, price, date, reason, strategy FROM trades ORDER BY date DESC").fetchall()
+    try:
+        holdings = portfolio_conn.execute("SELECT symbol, name, shares, entry_price, entry_date, strategy FROM holdings").fetchall()
+        trades = portfolio_conn.execute("SELECT symbol, action, shares, price, date, reason, strategy FROM trades ORDER BY date DESC").fetchall()
 
-    cash_row = portfolio_conn.execute("SELECT COALESCE(SUM(amount), 0) FROM cash_ledger").fetchone()
-    initial = PORTFOLIO_CONFIG["initial_capital"]
-    cash = initial + cash_row[0]
-    cash = max(cash, 0)
-
-    portfolio_conn.close()
+        cash_row = portfolio_conn.execute("SELECT COALESCE(SUM(amount), 0) FROM cash_ledger").fetchone()
+        initial = PORTFOLIO_CONFIG["initial_capital"]
+        cash = initial + cash_row[0]
+    finally:
+        portfolio_conn.close()
 
     total_market_value = 0
     holdings_detail = []
@@ -337,9 +350,9 @@ def _compute_portfolio_metrics(conn) -> dict:
 
 class TradeConfirmRequest(BaseModel):
     symbol: str
-    action: str
-    shares: int
-    price: float
+    action: Literal["buy", "sell"]
+    shares: int = Field(..., gt=0, description="Must be positive")
+    price: float = Field(..., gt=0, description="Must be positive")
     date: str
     reason: str = ""
     strategy: str = "manual"
@@ -348,9 +361,9 @@ class TradeConfirmRequest(BaseModel):
 
 class SignalActionRequest(BaseModel):
     signal_id: int
-    action: str  # "executed", "skipped"
-    actual_price: Optional[float] = None
-    actual_shares: Optional[int] = None
+    action: Literal["executed", "skipped"]
+    actual_price: Optional[float] = Field(None, gt=0)
+    actual_shares: Optional[int] = Field(None, gt=0)
 
 
 class CashOperationRequest(BaseModel):
@@ -411,10 +424,15 @@ def generate_signals(date: Optional[str] = None):
         signals = _generate_etf_signals(conn, date)
         portfolio_conn = _get_portfolio_conn()
         for s in signals:
-            portfolio_conn.execute(
-                "INSERT INTO signals (signal_date, execute_date, symbol, name, action, shares, reference_price, reason, strategy, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (s["signal_date"], s["execute_date"], s["symbol"], s["name"], s["action"], s["shares"], s["reference_price"], s["reason"], s["strategy"], s["status"])
-            )
+            existing = portfolio_conn.execute(
+                "SELECT id FROM signals WHERE signal_date=? AND symbol=? AND strategy=? AND status='pending'",
+                (s["signal_date"], s["symbol"], s["strategy"])
+            ).fetchone()
+            if not existing:
+                portfolio_conn.execute(
+                    "INSERT INTO signals (signal_date, execute_date, symbol, name, action, shares, reference_price, reason, strategy, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (s["signal_date"], s["execute_date"], s["symbol"], s["name"], s["action"], s["shares"], s["reference_price"], s["reason"], s["strategy"], s["status"])
+                )
         portfolio_conn.commit()
         portfolio_conn.close()
         return {"signals": signals, "count": len(signals)}
@@ -435,13 +453,17 @@ def confirm_signal(req: SignalActionRequest):
     actual_shares = req.actual_shares or shares
 
     if req.action == "executed":
-        portfolio_conn.execute("UPDATE signals SET status='executed' WHERE id=?", (req.signal_id,))
+        cursor = portfolio_conn.execute("UPDATE signals SET status='executed' WHERE id=? AND status='pending'", (req.signal_id,))
+        if cursor.rowcount == 0:
+            portfolio_conn.close()
+            raise HTTPException(409, "Signal already processed or not found")
 
         if action == "buy":
-            portfolio_conn.execute(
-                "INSERT INTO trades (symbol, name, action, shares, price, date, reason, strategy) VALUES (?,?,?,?,?,date('now'),?,?)",
-                (symbol, name or ETF_CODE_MAP.get(symbol, symbol), "buy", actual_shares, actual_price, reason, strategy)
-            )
+            cost = actual_shares * actual_price
+            current_cash = _get_cash_balance(portfolio_conn)
+            if current_cash < cost:
+                portfolio_conn.close()
+                raise HTTPException(400, f"Insufficient cash: need {cost:.2f}, have {current_cash:.2f}")
             portfolio_conn.execute(
                 "INSERT INTO cash_ledger (amount, operation, date, reason) VALUES (?,'withdraw',date('now'),?)",
                 (-(actual_shares * actual_price), f"买入 {symbol}")
@@ -468,12 +490,16 @@ def confirm_signal(req: SignalActionRequest):
                 (actual_shares * actual_price, f"卖出 {symbol}")
             )
             existing = portfolio_conn.execute("SELECT shares FROM holdings WHERE symbol=? AND strategy=?", (symbol, strategy)).fetchone()
-            if existing:
-                remaining = existing[0] - actual_shares
-                if remaining <= 0:
-                    portfolio_conn.execute("DELETE FROM holdings WHERE symbol=? AND strategy=?", (symbol, strategy))
-                else:
-                    portfolio_conn.execute("UPDATE holdings SET shares=?, updated_at=datetime('now') WHERE symbol=? AND strategy=?", (remaining, symbol, strategy))
+            if not existing:
+                portfolio_conn.close()
+                raise HTTPException(400, f"No holdings found for {symbol}")
+            if actual_shares > existing[0]:
+                actual_shares = existing[0]
+            remaining = existing[0] - actual_shares
+            if remaining <= 0:
+                portfolio_conn.execute("DELETE FROM holdings WHERE symbol=? AND strategy=?", (symbol, strategy))
+            else:
+                portfolio_conn.execute("UPDATE holdings SET shares=?, updated_at=datetime('now') WHERE symbol=? AND strategy=?", (remaining, symbol, strategy))
 
     elif req.action == "skipped":
         portfolio_conn.execute("UPDATE signals SET status='skipped' WHERE id=?", (req.signal_id,))
@@ -494,6 +520,11 @@ def manual_trade(req: TradeConfirmRequest):
     )
 
     if req.action == "buy":
+        cost = req.shares * req.price
+        current_cash = _get_cash_balance(portfolio_conn)
+        if current_cash < cost:
+            portfolio_conn.close()
+            raise HTTPException(400, f"Insufficient cash: need {cost:.2f}, have {current_cash:.2f}")
         portfolio_conn.execute(
             "INSERT INTO cash_ledger (amount, operation, date, reason) VALUES (?,'withdraw',?,?)",
             (-(req.shares * req.price), req.date, f"手动买入 {req.symbol}")
@@ -515,12 +546,16 @@ def manual_trade(req: TradeConfirmRequest):
             (req.shares * req.price, req.date, f"手动卖出 {req.symbol}")
         )
         existing = portfolio_conn.execute("SELECT shares FROM holdings WHERE symbol=? AND strategy=?", (req.symbol, req.strategy)).fetchone()
-        if existing:
-            remaining = existing[0] - req.shares
-            if remaining <= 0:
-                portfolio_conn.execute("DELETE FROM holdings WHERE symbol=? AND strategy=?", (req.symbol, req.strategy))
-            else:
-                portfolio_conn.execute("UPDATE holdings SET shares=?, updated_at=datetime('now') WHERE symbol=? AND strategy=?", (remaining, req.symbol, req.strategy))
+        if not existing:
+            portfolio_conn.close()
+            raise HTTPException(400, f"No holdings found for {req.symbol}")
+        if req.shares > existing[0]:
+            req.shares = existing[0]
+        remaining = existing[0] - req.shares
+        if remaining <= 0:
+            portfolio_conn.execute("DELETE FROM holdings WHERE symbol=? AND strategy=?", (req.symbol, req.strategy))
+        else:
+            portfolio_conn.execute("UPDATE holdings SET shares=?, updated_at=datetime('now') WHERE symbol=? AND strategy=?", (remaining, req.symbol, req.strategy))
 
     portfolio_conn.commit()
     portfolio_conn.close()
@@ -640,40 +675,43 @@ def update_market_data():
         conn = _get_db_conn()
         updated = []
 
-        for etf in ETF_POOL:
-            code = etf["code"]
-            try:
-                last_row = conn.execute(
-                    "SELECT MAX(trade_date) FROM etf_daily_quotes WHERE etf_code=?", (code,)
-                ).fetchone()
-                start = last_row[0] if last_row and last_row[0] else "20200101"
-                start_dt = datetime.strptime(start, "%Y-%m-%d") + timedelta(days=1)
-                start_str = start_dt.strftime("%Y%m%d")
+        try:
+            for etf in ETF_POOL:
+                code = etf["code"]
+                try:
+                    last_row = conn.execute(
+                        "SELECT MAX(trade_date) FROM etf_daily_quotes WHERE etf_code=?", (code,)
+                    ).fetchone()
+                    start = last_row[0] if last_row and last_row[0] else "20200101"
+                    start_dt = datetime.strptime(start, "%Y-%m-%d") + timedelta(days=1)
+                    start_str = start_dt.strftime("%Y%m%d")
 
-                if start_dt > datetime.now():
-                    continue
+                    if start_dt > datetime.now():
+                        continue
 
-                symbol = code[2:]
-                df = ak.fund_etf_hist_em(symbol=symbol, period="daily", start_date=start_str, adjust="qfq")
-                if df is None or df.empty:
-                    continue
+                    symbol = code[2:]
+                    df = ak.fund_etf_hist_em(symbol=symbol, period="daily", start_date=start_str, adjust="qfq")
+                    if df is None or df.empty:
+                        continue
 
-                col_map = {"日期": "trade_date", "开盘": "open", "收盘": "close", "最高": "high", "最低": "low", "成交量": "volume", "成交额": "amount"}
-                df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
-                df["etf_code"] = code
+                    col_map = {"日期": "trade_date", "开盘": "open", "收盘": "close", "最高": "high", "最低": "low", "成交量": "volume", "成交额": "amount"}
+                    df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+                    df["etf_code"] = code
 
-                for _, row in df.iterrows():
-                    conn.execute(
-                        "INSERT OR REPLACE INTO etf_daily_quotes (etf_code, trade_date, open, high, low, close, volume, amount) VALUES (?,?,?,?,?,?,?,?)",
-                        (code, str(row.get("trade_date", "")), float(row.get("open", 0)), float(row.get("high", 0)), float(row.get("low", 0)), float(row.get("close", 0)), float(row.get("volume", 0)), float(row.get("amount", 0)))
-                    )
+                    for _, row in df.iterrows():
+                        conn.execute(
+                            "INSERT OR REPLACE INTO etf_daily_quotes (etf_code, trade_date, open, high, low, close, volume, amount) VALUES (?,?,?,?,?,?,?,?)",
+                            (code, str(row.get("trade_date", "")), float(row.get("open", 0)), float(row.get("high", 0)), float(row.get("low", 0)), float(row.get("close", 0)), float(row.get("volume", 0)), float(row.get("amount", 0)))
+                        )
 
-                updated.append(f"{etf['name']}({code}): +{len(df)}条")
-            except Exception as e:
-                updated.append(f"{etf['name']}({code}): 失败 - {str(e)[:50]}")
+                    conn.commit()
+                    updated.append(f"{etf['name']}({code}): +{len(df)}条")
+                except Exception as e:
+                    conn.rollback()
+                    updated.append(f"{etf['name']}({code}): 失败 - {str(e)[:50]}")
+        finally:
+            conn.close()
 
-        conn.commit()
-        conn.close()
         return {"status": "ok", "updated": updated}
     except Exception as e:
         raise HTTPException(500, f"数据更新失败: {str(e)}")
@@ -682,37 +720,74 @@ def update_market_data():
 @app.get("/api/etf/prices")
 def get_etf_prices():
     conn = _get_db_conn()
-    results = []
-    for etf in ETF_POOL:
-        row = conn.execute(
-            "SELECT close, trade_date FROM etf_daily_quotes WHERE etf_code=? ORDER BY trade_date DESC LIMIT 1",
-            (etf["code"],)
-        ).fetchone()
-        if row:
-            prev_row = conn.execute(
-                "SELECT close FROM etf_daily_quotes WHERE etf_code=? AND trade_date < ? ORDER BY trade_date DESC LIMIT 1",
-                (etf["code"], row[1])
+    try:
+        results = []
+        for etf in ETF_POOL:
+            row = conn.execute(
+                "SELECT close, trade_date FROM etf_daily_quotes WHERE etf_code=? ORDER BY trade_date DESC LIMIT 1",
+                (etf["code"],)
             ).fetchone()
-            prev_close = prev_row[0] if prev_row else row[0]
-            change_pct = round((row[0] / prev_close - 1) * 100, 2)
-            results.append({
-                "code": etf["code"],
-                "name": etf["name"],
-                "price": round(row[0], 4),
-                "date": row[1],
-                "change_pct": change_pct,
-            })
-    conn.close()
-    return {"prices": results}
+            if row:
+                prev_row = conn.execute(
+                    "SELECT close FROM etf_daily_quotes WHERE etf_code=? AND trade_date < ? ORDER BY trade_date DESC LIMIT 1",
+                    (etf["code"], row[1])
+                ).fetchone()
+                prev_close = prev_row[0] if prev_row else row[0]
+                change_pct = round((row[0] / prev_close - 1) * 100, 2)
+                results.append({
+                    "code": etf["code"],
+                    "name": etf["name"],
+                    "price": round(row[0], 4),
+                    "date": row[1],
+                    "change_pct": change_pct,
+                })
+        return {"prices": results}
+    finally:
+        conn.close()
 
 
 @app.delete("/api/holdings/{symbol}")
 def remove_holding(symbol: str, strategy: str = Query("etf_rotation")):
     portfolio_conn = _get_portfolio_conn()
-    portfolio_conn.execute("DELETE FROM holdings WHERE symbol=? AND strategy=?", (symbol, strategy))
-    portfolio_conn.commit()
-    portfolio_conn.close()
-    return {"status": "ok"}
+    try:
+        holding = portfolio_conn.execute(
+            "SELECT shares, entry_price, name FROM holdings WHERE symbol=? AND strategy=?",
+            (symbol, strategy)
+        ).fetchone()
+        if not holding:
+            raise HTTPException(404, f"Holding not found: {symbol}")
+
+        shares, entry_price, name = holding
+        market_conn = _get_db_conn()
+        try:
+            if symbol.startswith("sh") or symbol.startswith("sz"):
+                price_row = market_conn.execute(
+                    "SELECT close FROM etf_daily_quotes WHERE etf_code=? ORDER BY trade_date DESC LIMIT 1",
+                    (symbol,)
+                ).fetchone()
+            else:
+                price_row = market_conn.execute(
+                    "SELECT close FROM daily_quotes WHERE ts_code=? ORDER BY trade_date DESC LIMIT 1",
+                    (symbol,)
+                ).fetchone()
+        finally:
+            market_conn.close()
+
+        sell_price = price_row[0] if price_row else entry_price
+
+        portfolio_conn.execute(
+            "INSERT INTO trades (symbol, name, action, shares, price, date, reason, strategy) VALUES (?,?,?,?,date('now'),?,?,?)",
+            (symbol, name or ETF_CODE_MAP.get(symbol, symbol), "sell", shares, sell_price, f"清仓卖出", strategy)
+        )
+        portfolio_conn.execute(
+            "INSERT INTO cash_ledger (amount, operation, date, reason) VALUES (?,'deposit',date('now'),?)",
+            (shares * sell_price, f"清仓卖出 {symbol}")
+        )
+        portfolio_conn.execute("DELETE FROM holdings WHERE symbol=? AND strategy=?", (symbol, strategy))
+        portfolio_conn.commit()
+        return {"status": "ok", "sold_shares": shares, "sold_price": sell_price}
+    finally:
+        portfolio_conn.close()
 
 
 # ── Backtest Engine ──────────────────────────────────────────────
@@ -741,8 +816,8 @@ def _run_etf_backtest(conn, lookback=20, top_k=3, rebalance=20, start_date=None,
 
 def _run_stock_backtest(conn, ts_code, strategy_name, start_date=None, end_date=None):
     df = pd.read_sql(
-        f"SELECT * FROM daily_quotes WHERE ts_code='{ts_code}' ORDER BY trade_date",
-        conn
+        "SELECT * FROM daily_quotes WHERE ts_code=? ORDER BY trade_date",
+        conn, params=[ts_code]
     )
     if start_date:
         df = df[df["trade_date"] >= start_date]
@@ -995,8 +1070,8 @@ def get_strategy_picks(date: Optional[str] = None):
         chip_sells = []
         for ts_code in stocks:
             df = pd.read_sql(
-                f"SELECT * FROM daily_quotes WHERE ts_code='{ts_code}' AND trade_date <= '{date}' ORDER BY trade_date DESC LIMIT 100",
-                conn
+                "SELECT * FROM daily_quotes WHERE ts_code=? AND trade_date <= ? ORDER BY trade_date DESC LIMIT 100",
+                conn, params=[ts_code, date]
             )
             if len(df) < 60:
                 continue
@@ -1021,8 +1096,8 @@ def get_strategy_picks(date: Optional[str] = None):
                             chip_buys.append(entry)
                         elif last.action == "sell":
                             chip_sells.append(entry)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.exception(f"Strategy failed: {e}")
 
         ml_picks = []
         try:
@@ -1109,8 +1184,8 @@ def get_chip_picks(date: Optional[str] = None, refresh: bool = False):
         chip_buys, chip_sells = [], []
         for ts_code in stocks:
             df = pd.read_sql(
-                f"SELECT * FROM daily_quotes WHERE ts_code='{ts_code}' AND trade_date <= '{date}' ORDER BY trade_date DESC LIMIT 100",
-                conn
+                "SELECT * FROM daily_quotes WHERE ts_code=? AND trade_date <= ? ORDER BY trade_date DESC LIMIT 100",
+                conn, params=[ts_code, date]
             )
             if len(df) < 60:
                 continue
@@ -1137,8 +1212,8 @@ def get_chip_picks(date: Optional[str] = None, refresh: bool = False):
                             chip_buys.append(entry)
                         elif last.action == "sell":
                             chip_sells.append(entry)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.exception(f"Strategy failed: {e}")
 
         result = {"enhanced_chip": {"description": "增强筹码策略", "buy_signals": chip_buys, "sell_signals": chip_sells}}
         import json as _json
@@ -1177,8 +1252,8 @@ def get_ml_picks(date: Optional[str] = None, refresh: bool = False):
         try:
             from strategies.ml_stock_strategy import generate_daily_stock_picks
             ml_picks = generate_daily_stock_picks(conn, date, top_n=10)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.exception(f"Strategy failed: {e}")
 
         result = {"ml_stock": {"description": "ML选股 (HistGradientBoosting)", "picks": ml_picks}}
 
