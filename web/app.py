@@ -658,14 +658,14 @@ def update_market_data():
                 if df is None or df.empty:
                     continue
 
-                col_map = {"日期": "trade_date", "开盘": "open", "收盘": "close", "最高": "high", "最低": "low", "成交量": "vol", "成交额": "amount"}
+                col_map = {"日期": "trade_date", "开盘": "open", "收盘": "close", "最高": "high", "最低": "low", "成交量": "volume", "成交额": "amount"}
                 df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
                 df["etf_code"] = code
 
                 for _, row in df.iterrows():
                     conn.execute(
-                        "INSERT OR REPLACE INTO etf_daily_quotes (etf_code, trade_date, open, high, low, close, vol, amount) VALUES (?,?,?,?,?,?,?,?)",
-                        (code, str(row.get("trade_date", "")), float(row.get("open", 0)), float(row.get("high", 0)), float(row.get("low", 0)), float(row.get("close", 0)), float(row.get("vol", 0)), float(row.get("amount", 0)))
+                        "INSERT OR REPLACE INTO etf_daily_quotes (etf_code, trade_date, open, high, low, close, volume, amount) VALUES (?,?,?,?,?,?,?,?)",
+                        (code, str(row.get("trade_date", "")), float(row.get("open", 0)), float(row.get("high", 0)), float(row.get("low", 0)), float(row.get("close", 0)), float(row.get("volume", 0)), float(row.get("amount", 0)))
                     )
 
                 updated.append(f"{etf['name']}({code}): +{len(df)}条")
