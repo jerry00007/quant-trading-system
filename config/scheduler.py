@@ -1,4 +1,5 @@
 """定时任务调度器"""
+
 import logging
 import sqlite3
 from datetime import datetime, timedelta
@@ -55,33 +56,35 @@ class DataUpdateScheduler:
             try:
                 last_row = conn.execute(
                     "SELECT MAX(trade_date) FROM etf_daily_quotes WHERE etf_code=?",
-                    (code,)
+                    (code,),
                 ).fetchone()
                 start = last_row[0] if last_row and last_row[0] else "20200101"
                 start_dt = datetime.strptime(start, "%Y-%m-%d") + timedelta(days=1)
-                start_str = start_dt.strftime("%Y%m%d")
 
                 if start_dt > datetime.now():
                     updated.append(f"{etf['name']}({code}): 无需更新")
                     continue
 
-                symbol = code[2:]
-                df = ak.fund_etf_hist_em(symbol=symbol, period="daily", start_date=start_str, adjust="qfq")
+                symbol = code
+                df = ak.fund_etf_hist_sina(symbol=symbol)
                 if df is None or df.empty:
                     updated.append(f"{etf['name']}({code}): 无数据")
                     continue
 
-                col_map = {
-                    "日期": "trade_date",
-                    "开盘": "open",
-                    "收盘": "close",
-                    "最高": "high",
-                    "最低": "low",
-                    "成交量": "volume",
-                    "成交额": "amount",
-                }
-                df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+                if "date" in df.columns:
+                    df["trade_date"] = pd.to_datetime(df["date"]).dt.strftime(
+                        "%Y-%m-%d"
+                    )
+                elif "日期" in df.columns:
+                    df["trade_date"] = pd.to_datetime(df["日期"]).dt.strftime(
+                        "%Y-%m-%d"
+                    )
                 df["etf_code"] = code
+
+                df = df[df["trade_date"] > start]
+                if df.empty:
+                    updated.append(f"{etf['name']}({code}): 无新数据")
+                    continue
 
                 rows_to_insert = [
                     (
@@ -92,13 +95,12 @@ class DataUpdateScheduler:
                         float(row.get("low", 0)),
                         float(row.get("close", 0)),
                         float(row.get("volume", 0)),
-                        float(row.get("amount", 0)),
                     )
                     for _, row in df.iterrows()
                 ]
 
                 conn.executemany(
-                    "INSERT OR REPLACE INTO etf_daily_quotes (etf_code, trade_date, open, high, low, close, volume, amount) VALUES (?,?,?,?,?,?,?,?)",
+                    "INSERT OR REPLACE INTO etf_daily_quotes (etf_code, trade_date, open, high, low, close, volume) VALUES (?,?,?,?,?,?,?)",
                     rows_to_insert,
                 )
                 conn.commit()
@@ -111,16 +113,21 @@ class DataUpdateScheduler:
 
     def update_stock_data(self, batch_size: int = 100) -> dict:
         """批量更新股票数据
-        
+
         Args:
             batch_size: 每批更新的股票数量
-            
+
         Returns:
             更新结果统计
         """
         conn = self._get_conn()
 
-        stocks = [r[0] for r in conn.execute("SELECT ts_code FROM stock_list ORDER BY ts_code").fetchall()]
+        stocks = [
+            r[0]
+            for r in conn.execute(
+                "SELECT ts_code FROM stock_list ORDER BY ts_code"
+            ).fetchall()
+        ]
 
         if not stocks:
             return {"total": 0, "success": 0, "failed": 0, "errors": ["股票列表为空"]}
@@ -133,7 +140,8 @@ class DataUpdateScheduler:
         for i, ts_code in enumerate(stocks):
             try:
                 last_row = conn.execute(
-                    "SELECT MAX(trade_date) FROM daily_quotes WHERE ts_code=?", (ts_code,)
+                    "SELECT MAX(trade_date) FROM daily_quotes WHERE ts_code=?",
+                    (ts_code,),
                 ).fetchone()
                 start = last_row[0] if last_row and last_row[0] else "20200101"
 
@@ -141,7 +149,13 @@ class DataUpdateScheduler:
                     results["success"] += 1
                     continue
 
-                df = ak.stock_zh_a_hist(symbol=ts_code[:6], period="daily", start_date=start.replace("-", ""), end_date=today, adjust="qfq")
+                df = ak.stock_zh_a_hist(
+                    symbol=ts_code[:6],
+                    period="daily",
+                    start_date=start.replace("-", ""),
+                    end_date=today,
+                    adjust="qfq",
+                )
                 if df is None or df.empty:
                     results["success"] += 1
                     continue
@@ -158,11 +172,15 @@ class DataUpdateScheduler:
                     "涨跌额": "change",
                     "换手率": "turnover",
                 }
-                df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+                df = df.rename(
+                    columns={k: v for k, v in col_map.items() if k in df.columns}
+                )
                 df["ts_code"] = ts_code
 
                 if "trade_date" in df.columns:
-                    df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.strftime("%Y-%m-%d")
+                    df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.strftime(
+                        "%Y-%m-%d"
+                    )
 
                 rows_to_insert = [
                     (
@@ -189,7 +207,7 @@ class DataUpdateScheduler:
                 results["success"] += 1
 
                 if (i + 1) % 10 == 0:
-                    logger.info(f"股票数据更新进度: {i+1}/{len(stocks)}")
+                    logger.info(f"股票数据更新进度: {i + 1}/{len(stocks)}")
 
             except Exception as e:
                 results["failed"] += 1
@@ -223,7 +241,9 @@ class DataUpdateScheduler:
     def cleanup_old_cache(self) -> int:
         """清理过期的缓存"""
         conn = self._get_conn()
-        conn.execute("DELETE FROM api_cache WHERE created_at < datetime('now', '-7 days')")
+        conn.execute(
+            "DELETE FROM api_cache WHERE created_at < datetime('now', '-7 days')"
+        )
         deleted = conn.total_changes
         conn.commit()
         return deleted

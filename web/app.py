@@ -39,15 +39,239 @@ logger = logging.getLogger(__name__)
 _scheduler = None
 
 
+def _run_etf_update():
+    """定时更新ETF数据（由APScheduler调用）"""
+    try:
+        from config.scheduler import get_scheduler
+
+        scheduler = get_scheduler()
+        results = scheduler.update_etf_data()
+        logger.info(f"定时ETF更新完成: {results}")
+    except Exception as e:
+        logger.exception(f"定时ETF更新失败: {e}")
+
+
+def _run_stock_update():
+    """定时更新股票数据（由APScheduler调用）"""
+    try:
+        from config.scheduler import get_scheduler
+
+        scheduler = get_scheduler()
+        results = scheduler.update_stock_data()
+        logger.info(f"定时股票更新完成: {results}")
+    except Exception as e:
+        logger.exception(f"定时股票更新失败: {e}")
+
+
+def _run_cache_cleanup():
+    try:
+        conn = _get_db_conn()
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS api_cache (
+                cache_key TEXT PRIMARY KEY,
+                data TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute(
+            "DELETE FROM api_cache WHERE created_at < datetime('now', '-7 day')"
+        )
+        conn.commit()
+        conn.close()
+        logger.info("缓存清理完成")
+    except Exception as e:
+        logger.exception(f"缓存清理失败: {e}")
+
+
+def _run_picks_precompute():
+    try:
+        logger.info("开始预计算策略选股信号...")
+        conn = _get_db_conn()
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS api_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    data TEXT NOT NULL,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+
+            row = conn.execute("SELECT MAX(trade_date) FROM daily_quotes").fetchone()
+            date = row[0] if row and row[0] else None
+            if not date:
+                logger.warning("无可用的交易日期，跳过预计算")
+                return
+
+            feat_df = _compute_stock_features(conn, date)
+
+            NEW_STRATEGIES = [
+                "vol_breakout",
+                "dragon_first_yin",
+                "trend_ma",
+                "top_bottom",
+                "bollinger_break",
+                "rsi_momentum",
+                "macd_cross",
+            ]
+            for strat in NEW_STRATEGIES:
+                try:
+                    picks = _apply_strategy_filter(strat, feat_df, date, conn)
+                    formatted = [
+                        {
+                            "ts_code": p.get("ts_code", ""),
+                            "name": _get_stock_name_safe(p.get("ts_code", "")),
+                            "reason": p.get("reason", ""),
+                            "strategy": strat,
+                        }
+                        for p in (picks if isinstance(picks, list) else [])
+                    ]
+                    cache_key = f"strategy_picks_{strat}_{date}"
+                    conn.execute(
+                        "INSERT OR REPLACE INTO api_cache (cache_key, data) VALUES (?, ?)",
+                        (cache_key, json.dumps(formatted, ensure_ascii=False)),
+                    )
+                    logger.info(f"预计算完成: {strat} ({len(formatted)} picks)")
+                except Exception as e:
+                    logger.warning(f"预计算策略 {strat} 失败: {e}")
+
+            try:
+                stock_signals = _compute_dashboard_stock_signals(conn, feat_df, date)
+                conn.execute(
+                    "INSERT OR REPLACE INTO api_cache (cache_key, data) VALUES (?, ?)",
+                    (
+                        f"dashboard_stocks_{date}",
+                        json.dumps(stock_signals, ensure_ascii=False),
+                    ),
+                )
+                logger.info(f"预计算dashboard信号完成 ({len(stock_signals)} signals)")
+            except Exception as e:
+                logger.warning(f"预计算dashboard信号失败: {e}")
+
+            try:
+                portfolio_conn = _get_portfolio_conn()
+                try:
+                    holdings = portfolio_conn.execute(
+                        "SELECT symbol, name, shares, entry_price, strategy FROM holdings"
+                    ).fetchall()
+                finally:
+                    portfolio_conn.close()
+
+                stock_holdings = [
+                    (s, n, sh, ep, st)
+                    for s, n, sh, ep, st in holdings
+                    if not s.startswith("sh") and not s.startswith("sz")
+                ]
+                signals = []
+                if feat_df is not None and stock_holdings:
+                    day = feat_df[feat_df["trade_date"] == date]
+                    for sym, name, shares, entry_price, strategy in stock_holdings:
+                        stock_row = day[day["ts_code"] == sym]
+                        if stock_row.empty:
+                            continue
+                        r = stock_row.iloc[0]
+                        current_price = float(r["close"])
+                        pnl_pct = (
+                            (current_price / entry_price - 1) * 100
+                            if entry_price > 0
+                            else 0
+                        )
+                        reasons = []
+                        rsi_val = r.get("rsi_14")
+                        if pd.notna(rsi_val) and float(rsi_val) > 75:
+                            reasons.append(
+                                f"RSI超买({float(rsi_val):.0f})，注意回调风险"
+                            )
+                        ma20_val = r.get("ma20")
+                        ret20 = r.get("returns_20d")
+                        if (
+                            pd.notna(ma20_val)
+                            and pd.notna(ret20)
+                            and float(current_price) < float(ma20_val)
+                            and float(ret20) < -0.1
+                        ):
+                            reasons.append("跌破20日均线，中期趋势转弱")
+                        zlcmq_val = r.get("zlcmq")
+                        if pd.notna(zlcmq_val) and float(zlcmq_val) > 92:
+                            reasons.append(
+                                f"筹码极度集中({float(zlcmq_val):.0f})，高位风险"
+                            )
+                        if pnl_pct < -5:
+                            reasons.append(f"浮亏{pnl_pct:.1f}%，建议关注止损")
+                        if reasons:
+                            signals.append(
+                                {
+                                    "symbol": sym,
+                                    "name": name or _get_stock_name_safe(sym),
+                                    "reasons": reasons,
+                                    "strategy": strategy,
+                                    "current_price": round(current_price, 2),
+                                    "pnl_pct": round(pnl_pct, 2),
+                                    "entry_price": round(entry_price, 2),
+                                }
+                            )
+                conn.execute(
+                    "INSERT OR REPLACE INTO api_cache (cache_key, data) VALUES (?, ?)",
+                    (
+                        f"sell_signals_{date}",
+                        json.dumps({"signals": signals}, ensure_ascii=False),
+                    ),
+                )
+                logger.info(f"预计算卖出信号完成 ({len(signals)} signals)")
+            except Exception as e:
+                logger.warning(f"预计算卖出信号失败: {e}")
+
+            conn.commit()
+            logger.info(f"策略预计算全部完成 (date={date})")
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.exception(f"预计算任务失败: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _scheduler
     from apscheduler.schedulers.background import BackgroundScheduler
+    from apscheduler.triggers.cron import CronTrigger
     from config.scheduler import get_scheduler
 
     _scheduler = BackgroundScheduler()
     _scheduler.start()
     logger.info("定时调度器已启动")
+
+    # 注册每日定时任务：16:30更新ETF数据，17:00更新股票数据
+    _scheduler.add_job(
+        _run_etf_update,
+        CronTrigger(hour=16, minute=30),
+        id="daily_etf_update",
+        name="每日ETF数据更新",
+        replace_existing=True,
+        misfire_grace_time=3600,  # 允许1小时延迟（如果服务未运行）
+    )
+    _scheduler.add_job(
+        _run_stock_update,
+        CronTrigger(hour=17, minute=0),
+        id="daily_stock_update",
+        name="每日股票数据更新",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+    _scheduler.add_job(
+        _run_picks_precompute,
+        CronTrigger(hour=17, minute=30),
+        id="daily_picks_precompute",
+        name="每日策略信号预计算",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+    _scheduler.add_job(
+        _run_cache_cleanup,
+        CronTrigger(day_of_week="mon", hour=3, minute=0),
+        id="weekly_cache_cleanup",
+        name="每周缓存清理",
+        replace_existing=True,
+    )
+    logger.info(f"已注册定时任务: {[job.name for job in _scheduler.get_jobs()]}")
 
     yield
 
@@ -448,7 +672,7 @@ class CashOperationRequest(BaseModel):
 
 
 @app.get("/api/dashboard")
-def get_dashboard():
+def get_dashboard(refresh: bool = False):
     conn = _get_db_conn()
     try:
         portfolio = _compute_portfolio_metrics(conn)
@@ -468,7 +692,6 @@ def get_dashboard():
                 "signal_date": row[1],
                 "execute_date": row[2],
                 "symbol": row[3],
-                "name": ETF_CODE_MAP.get(row[3], row[3]),
                 "action": row[4],
                 "shares": row[5],
                 "reference_price": row[6],
@@ -479,10 +702,58 @@ def get_dashboard():
             for row in pending
         ]
 
+        stock_signals = []
+        try:
+            stock_date_row = conn.execute(
+                "SELECT MAX(trade_date) FROM daily_quotes"
+            ).fetchone()
+            stock_date = (
+                stock_date_row[0]
+                if stock_date_row and stock_date_row[0]
+                else latest_date
+            )
+            if stock_date:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS api_cache (
+                        cache_key TEXT PRIMARY KEY,
+                        data TEXT NOT NULL,
+                        created_at TEXT DEFAULT (datetime('now'))
+                    )
+                """)
+                cache_key = f"dashboard_stocks_{stock_date}"
+                if not refresh:
+                    cached = conn.execute(
+                        "SELECT data FROM api_cache WHERE cache_key=? AND created_at > datetime('now', '-1 day')",
+                        (cache_key,),
+                    ).fetchone()
+                    if cached:
+                        stock_signals = json.loads(cached[0])
+                        return {
+                            "portfolio": portfolio,
+                            "pending_signals": pending_signals,
+                            "fresh_signals": signals,
+                            "stock_signals": stock_signals,
+                            "config": PORTFOLIO_CONFIG,
+                            "etf_pool": ETF_POOL,
+                        }
+
+                feat_df = _compute_stock_features(conn, stock_date)
+                stock_signals = _compute_dashboard_stock_signals(
+                    conn, feat_df, stock_date
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO api_cache (cache_key, data) VALUES (?, ?)",
+                    (cache_key, json.dumps(stock_signals, ensure_ascii=False)),
+                )
+                conn.commit()
+        except Exception as e:
+            logger.exception(f"Dashboard股票信号计算失败: {e}")
+
         return {
             "portfolio": portfolio,
             "pending_signals": pending_signals,
             "fresh_signals": signals,
+            "stock_signals": stock_signals[:10],
             "config": PORTFOLIO_CONFIG,
             "etf_pool": ETF_POOL,
         }
@@ -707,6 +978,69 @@ def manual_trade(req: TradeConfirmRequest):
                 "UPDATE holdings SET shares=?, updated_at=datetime('now') WHERE symbol=? AND strategy=?",
                 (remaining, req.symbol, req.strategy),
             )
+
+    portfolio_conn.commit()
+    portfolio_conn.close()
+    return {"status": "ok"}
+
+
+class PickBuyRequest(BaseModel):
+    symbol: str
+    name: str = ""
+    price: float = Field(..., gt=0)
+    shares: int = Field(default=100, gt=0)
+    strategy: str = ""
+    reason: str = ""
+
+
+@app.post("/api/strategies/picks/buy")
+def buy_from_picks(req: PickBuyRequest):
+    portfolio_conn = _get_portfolio_conn()
+    name = req.name or _get_stock_name_safe(req.symbol)
+    today_str = datetime.now().strftime("%Y%m%d")
+
+    portfolio_conn.execute(
+        "INSERT INTO trades (symbol, name, action, shares, price, date, reason, strategy) VALUES (?,?,?,?,?,?,?,?)",
+        (
+            req.symbol,
+            name,
+            "buy",
+            req.shares,
+            req.price,
+            today_str,
+            req.reason,
+            req.strategy,
+        ),
+    )
+
+    cost = req.shares * req.price
+    current_cash = _get_cash_balance(portfolio_conn)
+    if current_cash < cost:
+        portfolio_conn.close()
+        raise HTTPException(
+            400, f"Insufficient cash: need {cost:.2f}, have {current_cash:.2f}"
+        )
+    portfolio_conn.execute(
+        "INSERT INTO cash_ledger (amount, operation, date, reason) VALUES (?,'withdraw',?,?)",
+        (-(req.shares * req.price), today_str, f"策略买入 {req.symbol}"),
+    )
+    existing = portfolio_conn.execute(
+        "SELECT shares, entry_price FROM holdings WHERE symbol=? AND strategy=?",
+        (req.symbol, req.strategy),
+    ).fetchone()
+    if existing:
+        old_shares, old_price = existing
+        new_shares = old_shares + req.shares
+        new_entry = (old_shares * old_price + req.shares * req.price) / new_shares
+        portfolio_conn.execute(
+            "UPDATE holdings SET shares=?, entry_price=?, updated_at=datetime('now') WHERE symbol=? AND strategy=?",
+            (new_shares, new_entry, req.symbol, req.strategy),
+        )
+    else:
+        portfolio_conn.execute(
+            "INSERT INTO holdings (symbol, name, shares, entry_price, entry_date, strategy) VALUES (?,?,?,?,?,?)",
+            (req.symbol, name, req.shares, req.price, today_str, req.strategy),
+        )
 
     portfolio_conn.commit()
     portfolio_conn.close()
@@ -949,184 +1283,236 @@ def remove_holding(symbol: str, strategy: str = Query("etf_rotation")):
         portfolio_conn.close()
 
 
-# ── Backtest Engine ──────────────────────────────────────────────
+@app.get("/api/holdings/sell-signals")
+def get_holdings_sell_signals(refresh: bool = False):
+    portfolio_conn = _get_portfolio_conn()
+    try:
+        holdings = portfolio_conn.execute(
+            "SELECT symbol, name, shares, entry_price, strategy FROM holdings"
+        ).fetchall()
+    finally:
+        portfolio_conn.close()
+
+    if not holdings:
+        return {"signals": []}
+
+    stock_holdings = [
+        (sym, name, shares, entry_price, strategy)
+        for sym, name, shares, entry_price, strategy in holdings
+        if not sym.startswith("sh") and not sym.startswith("sz")
+    ]
+
+    if not stock_holdings:
+        return {"signals": []}
+
+    conn = _get_db_conn()
+    try:
+        row = conn.execute("SELECT MAX(trade_date) FROM daily_quotes").fetchone()
+        latest_date = row[0] if row and row[0] else None
+        if not latest_date:
+            return {"signals": []}
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS api_cache (
+                cache_key TEXT PRIMARY KEY,
+                data TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        sell_cache_key = f"sell_signals_{latest_date}"
+        if not refresh:
+            cached = conn.execute(
+                "SELECT data FROM api_cache WHERE cache_key=? AND created_at > datetime('now', '-1 day')",
+                (sell_cache_key,),
+            ).fetchone()
+            if cached:
+                return json.loads(cached[0])
+
+        feat_df = _compute_stock_features(conn, latest_date)
+        if feat_df is None:
+            return {"signals": []}
+
+        day = feat_df[feat_df["trade_date"] == latest_date]
+
+        signals = []
+        for sym, name, shares, entry_price, strategy in stock_holdings:
+            stock_row = day[day["ts_code"] == sym]
+            if stock_row.empty:
+                continue
+
+            r = stock_row.iloc[0]
+            current_price = float(r["close"])
+            pnl_pct = (current_price / entry_price - 1) * 100 if entry_price > 0 else 0
+
+            reasons = []
+
+            rsi_val = r.get("rsi_14")
+            if pd.notna(rsi_val) and float(rsi_val) > 75:
+                reasons.append(f"RSI超买({float(rsi_val):.0f})，注意回调风险")
+
+            ma20_val = r.get("ma20")
+            ret20 = r.get("returns_20d")
+            if (
+                pd.notna(ma20_val)
+                and pd.notna(ret20)
+                and float(current_price) < float(ma20_val)
+                and float(ret20) < -0.1
+            ):
+                reasons.append("跌破20日均线，中期趋势转弱")
+
+            zlcmq_val = r.get("zlcmq")
+            if pd.notna(zlcmq_val) and float(zlcmq_val) > 92:
+                reasons.append(f"筹码极度集中({float(zlcmq_val):.0f})，高位风险")
+
+            if pnl_pct < -5:
+                reasons.append(f"浮亏{pnl_pct:.1f}%，建议关注止损")
+
+            if reasons:
+                signals.append(
+                    {
+                        "symbol": sym,
+                        "name": name or _get_stock_name_safe(sym),
+                        "reasons": reasons,
+                        "strategy": strategy,
+                        "current_price": round(current_price, 2),
+                        "pnl_pct": round(pnl_pct, 2),
+                        "entry_price": round(entry_price, 2),
+                    }
+                )
+
+        result = {"signals": signals}
+        conn.execute(
+            "INSERT OR REPLACE INTO api_cache (cache_key, data) VALUES (?, ?)",
+            (sell_cache_key, json.dumps(result, ensure_ascii=False)),
+        )
+        conn.commit()
+        return result
+    except Exception as e:
+        logger.exception(f"获取卖出信号失败: {e}")
+        raise HTTPException(500, f"获取卖出信号失败: {str(e)}")
+    finally:
+        conn.close()
 
 
-def _run_etf_backtest(
-    conn, lookback=20, top_k=3, rebalance=20, start_date=None, end_date=None
-):
-    strategy = ETFRotationStrategy(
-        lookback=lookback, top_k=top_k, rebalance_days=rebalance
-    )
-    etf_data = strategy._load_etf_data(conn)
-    if not etf_data:
-        return None
+def _compute_dashboard_stock_signals(conn, feat_df, stock_date):
+    """Compute stock signals for dashboard (chip + ML).
 
-    if start_date or end_date:
-        filtered = {}
-        for code, df in etf_data.items():
-            mask = pd.Series(True, index=df.index)
-            if start_date:
-                mask &= df["trade_date"] >= start_date
-            if end_date:
-                mask &= df["trade_date"] <= end_date
-            sub = df.loc[mask].reset_index(drop=True)
-            if len(sub) > 50:
-                filtered[code] = sub
-        etf_data = filtered
+    Extracted so it can be called from both the dashboard endpoint and the
+    daily precompute job.  Returns a list of signal dicts (max 10).
+    """
+    stock_signals = []
+    if feat_df is None or not stock_date:
+        return stock_signals
 
-    return strategy.run_rotation_backtest(etf_data)
+    day = feat_df[feat_df["trade_date"] == stock_date]
+    day = day[day["cumcount"] >= 74]
 
-
-def _run_stock_backtest(conn, ts_code, strategy_name, start_date=None, end_date=None):
-    df = pd.read_sql(
-        "SELECT * FROM daily_quotes WHERE ts_code=? ORDER BY trade_date",
-        conn,
-        params=[ts_code],
-    )
-    if start_date:
-        df = df[df["trade_date"] >= start_date]
-    if end_date:
-        df = df[df["trade_date"] <= end_date]
-    if len(df) < 60:
-        return None
-
-    df["ts_code"] = ts_code
-
-    if strategy_name == "enhanced_chip":
-        from strategies.enhanced_chip_strategy import EnhancedChipStrategy
-
-        s = EnhancedChipStrategy()
-        signals = s.calculate_signals(df)
-        return _signals_to_backtest_result(signals, df, ts_code)
-    elif strategy_name == "dual_ma":
-        from strategies.benchmark_strategies import DualMAStrategy
-
-        s = DualMAStrategy()
-        signals = s.calculate_signals(df)
-        return _signals_to_backtest_result(signals, df, ts_code)
-    elif strategy_name == "bollinger":
-        from strategies.benchmark_strategies import BollingerBandStrategy
-
-        s = BollingerBandStrategy()
-        signals = s.calculate_signals(df)
-        return _signals_to_backtest_result(signals, df, ts_code)
-    elif strategy_name == "rsi":
-        from strategies.benchmark_strategies import RSIStrategy
-
-        s = RSIStrategy()
-        signals = s.calculate_signals(df)
-        return _signals_to_backtest_result(signals, df, ts_code)
-    elif strategy_name == "ml_stock":
-        from strategies.ml_stock_strategy import run_ml_backtest_for_stock
-
-        return run_ml_backtest_for_stock(conn, ts_code, start_date, end_date)
-    return None
-
-
-def _signals_to_backtest_result(signals, df, ts_code):
-    if not signals:
-        return None
-
-    capital = 100_000.0
-    shares = 0
-    entry_price = 0
-    portfolio_values = []
-    portfolio_dates = []
-    trades = []
-
-    date_index = {str(row["trade_date"]): i for i, row in df.iterrows()}
-
-    buy_dates = sorted(set(str(s.trade_date) for s in signals if s.action == "buy"))
-    sell_dates = sorted(set(str(s.trade_date) for s in signals if s.action == "sell"))
-
-    signal_map = {}
-    for s in signals:
-        d = str(s.trade_date)
-        if d not in signal_map:
-            signal_map[d] = []
-        signal_map[d].append(s)
-
-    for _, row in df.iterrows():
-        date = str(row["trade_date"])
-        price = float(row["close"])
-
-        if date in signal_map:
-            for s in signal_map[date]:
-                if s.action == "buy" and shares == 0:
-                    exec_p = float(s.price) if s.price else price
-                    new_shares = int(capital * 0.95 / exec_p) // 100 * 100
-                    if new_shares >= 100:
-                        cost = new_shares * exec_p * 1.0003
-                        if cost <= capital:
-                            capital -= cost
-                            shares = new_shares
-                            entry_price = exec_p
-                            trades.append(
-                                {
-                                    "date": date,
-                                    "action": "buy",
-                                    "price": exec_p,
-                                    "shares": shares,
-                                    "reason": s.reason,
-                                }
-                            )
-
-                elif s.action == "sell" and shares > 0:
-                    exec_p = float(s.price) if s.price else price
-                    revenue = shares * exec_p * (1 - 0.0003 - 0.0005)
-                    pnl = (exec_p / entry_price - 1) * 100
-                    capital += revenue
-                    trades.append(
+    # ── Chip signals ──
+    cur_z = day["zlcmq"].values
+    valid = (~np.isnan(cur_z)) & (cur_z >= 60) & (cur_z <= 92)
+    chip_day = day[valid]
+    if not chip_day.empty:
+        z5_max = chip_day["zlcmq_max5"].values
+        z_prev = chip_day["zlcmq_prev1"].values
+        cur_close = chip_day["close"].values
+        cur_open = chip_day["open"].values
+        prev_close = np.where(
+            chip_day["returns_1d"].isna(),
+            cur_close,
+            cur_close / (1.0 + chip_day["returns_1d"].fillna(0).values),
+        )
+        was_high = z5_max >= 85
+        declining = cur_z[valid] < z_prev
+        not_fast = (z5_max - cur_z[valid]) <= 35
+        stable = (cur_close >= cur_open) | (cur_close > prev_close)
+        chip_passed = chip_day[was_high & declining & not_fast & stable].copy()
+        if not chip_passed.empty:
+            chip_passed = chip_passed.sort_values("zlcmq", ascending=False)
+            seen = set()
+            for _, r in chip_passed.head(5).iterrows():
+                ts = r["ts_code"]
+                if ts not in seen:
+                    seen.add(ts)
+                    stock_signals.append(
                         {
-                            "date": date,
-                            "action": "sell",
-                            "price": exec_p,
-                            "shares": shares,
-                            "pnl_pct": round(pnl, 2),
-                            "reason": s.reason,
+                            "symbol": ts,
+                            "name": _get_stock_name_safe(ts),
+                            "action": "buy",
+                            "price": round(float(r["close"]), 2),
+                            "reason": f"筹码高位回落企稳 ZLCMQ={round(float(r['zlcmq']), 1)}",
+                            "strategy": "chip",
+                            "source": "筹码策略",
                         }
                     )
-                    shares = 0
-                    entry_price = 0
 
-        val = capital + shares * price
-        portfolio_values.append(round(val, 2))
-        portfolio_dates.append(date)
+    # ── ML signals ──
+    FEATURE_COLS = [
+        "returns_20d",
+        "volatility_20d",
+        "returns_5d",
+        "volatility_5d",
+        "price_to_ma20",
+        "ma5_to_ma20",
+        "vol_to_vol_ma",
+        "price_to_high20",
+        "volume_ratio",
+        "rsi_14",
+    ]
+    pool = feat_df[feat_df["cumcount"] >= 49].dropna(subset=FEATURE_COLS)
+    if pool.shape[0] >= 100:
+        pool["future_close_5d"] = pool.groupby("ts_code")["close"].transform(
+            lambda s: s.shift(-5)
+        )
+        pool["label_5d_up"] = (pool["future_close_5d"] > pool["close"]).astype(
+            np.float64
+        )
+        labels = pool["label_5d_up"].values
+        has_label = ~np.isnan(labels)
+        X_all = pool[FEATURE_COLS].values
+        y_all = labels
+        X_train = X_all[has_label]
+        y_train = np.nan_to_num(y_all[has_label], nan=0.0)
+        if len(X_train) >= 50 and len(np.unique(y_train)) >= 2:
+            try:
+                from sklearn.ensemble import HistGradientBoostingClassifier
 
-    if not portfolio_values:
-        return None
+                model = HistGradientBoostingClassifier(
+                    max_iter=50,
+                    max_depth=3,
+                    learning_rate=0.1,
+                    min_samples_leaf=10,
+                    random_state=42,
+                )
+                model.fit(X_train, y_train)
+                ml_day = day.dropna(subset=FEATURE_COLS)
+                if not ml_day.empty:
+                    X_score = ml_day[FEATURE_COLS].values
+                    proba = model.predict_proba(X_score)
+                    prob_up = proba[:, 1] if proba.shape[1] > 1 else proba[:, 0]
+                    ml_passed = ml_day[prob_up > 0.45].copy()
+                    if not ml_passed.empty:
+                        ml_passed["prob_up"] = prob_up[prob_up > 0.45]
+                        ml_passed = ml_passed.sort_values("prob_up", ascending=False)
+                        seen_codes = {s["symbol"] for s in stock_signals}
+                        for _, r in ml_passed.head(5).iterrows():
+                            ts = r["ts_code"]
+                            if ts not in seen_codes:
+                                seen_codes.add(ts)
+                                stock_signals.append(
+                                    {
+                                        "symbol": ts,
+                                        "name": _get_stock_name_safe(ts),
+                                        "action": "buy",
+                                        "price": round(float(r["close"]), 2),
+                                        "reason": f"ML预测上涨概率{round(float(r['prob_up']) * 100)}%",
+                                        "strategy": "ml",
+                                        "source": "ML策略",
+                                    }
+                                )
+            except Exception:
+                pass
 
-    pv = np.array(portfolio_values)
-    peak = np.maximum.accumulate(pv)
-    dd_arr = (pv - peak) / peak
-    max_dd = float(dd_arr.min() * 100) if len(dd_arr) > 0 else 0
-    total_return = float((pv[-1] / 100_000 - 1) * 100)
-    returns = np.diff(pv) / pv[:-1]
-    sharpe = (
-        float(np.mean(returns) / (np.std(returns) + 1e-8) * np.sqrt(252))
-        if len(returns) > 1
-        else 0
-    )
-
-    sell_trades = [t for t in trades if t["action"] == "sell"]
-    wins = sum(1 for t in sell_trades if t.get("pnl_pct", 0) > 0)
-
-    name = _get_stock_name_safe(ts_code)
-    return {
-        "ts_code": ts_code,
-        "name": name,
-        "total_return": round(total_return, 2),
-        "sharpe": round(sharpe, 2),
-        "max_drawdown": round(max_dd, 2),
-        "total_trades": len(trades),
-        "sell_trades": len(sell_trades),
-        "win_rate": round(wins / len(sell_trades) * 100, 1) if sell_trades else 0,
-        "final_capital": round(float(pv[-1]), 2),
-        "portfolio_dates": portfolio_dates,
-        "portfolio_values": [round(float(v), 2) for v in pv],
-        "trades": trades[-30:],
-    }
+    return stock_signals[:10]
 
 
 def _get_stock_name_safe(ts_code: str) -> str:
@@ -1141,105 +1527,6 @@ def _get_stock_name_safe(ts_code: str) -> str:
     except Exception:
         pass
     return ts_code
-
-
-@app.get("/api/backtest/run")
-def run_backtest(
-    strategy: str = Query(
-        ...,
-        description="Strategy: etf_rotation, enhanced_chip, dual_ma, bollinger, rsi, ml_stock",
-    ),
-    symbol: Optional[str] = Query(None),
-    start_date: Optional[str] = Query(None),
-    end_date: Optional[str] = Query(None),
-    lookback: int = Query(20),
-    top_k: int = Query(3),
-    rebalance: int = Query(20),
-):
-    conn = _get_db_conn()
-    try:
-        if strategy == "etf_rotation":
-            result = _run_etf_backtest(
-                conn,
-                lookback=lookback,
-                top_k=top_k,
-                rebalance=rebalance,
-                start_date=start_date,
-                end_date=end_date,
-            )
-            if result:
-                return {
-                    "strategy": strategy,
-                    "total_return": result["total_return"],
-                    "sharpe": result["sharpe"],
-                    "max_drawdown": result["max_drawdown"],
-                    "win_rate": result["win_rate"],
-                    "total_trades": result["total_trades"],
-                    "cagr": result.get("cagr", 0),
-                    "portfolio_dates": result.get("portfolio_dates", [])[-500:],
-                    "portfolio_values": result.get("portfolio_values", [])[-500:],
-                }
-            return {"error": "No result"}
-
-        if not symbol:
-            raise HTTPException(400, "symbol required for stock strategies")
-
-        result = _run_stock_backtest(conn, symbol, strategy, start_date, end_date)
-        if result:
-            return {"strategy": strategy, **result}
-        return {"error": "Insufficient data or no signals"}
-    finally:
-        conn.close()
-
-
-@app.get("/api/backtest/compare")
-def compare_strategies(
-    symbols: str = Query(..., description="Comma-separated stock codes"),
-    start_date: Optional[str] = Query("20220101"),
-    end_date: Optional[str] = Query(None),
-):
-    conn = _get_db_conn()
-    try:
-        symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
-        strategy_names = ["enhanced_chip", "dual_ma", "rsi", "bollinger"]
-        results = []
-
-        for sym in symbol_list[:5]:
-            for strat in strategy_names:
-                r = _run_stock_backtest(conn, sym, strat, start_date, end_date)
-                if r:
-                    results.append(
-                        {
-                            "symbol": sym,
-                            "name": r.get("name", sym),
-                            "strategy": strat,
-                            "total_return": r["total_return"],
-                            "sharpe": r["sharpe"],
-                            "max_drawdown": r["max_drawdown"],
-                            "win_rate": r.get("win_rate", 0),
-                            "total_trades": r.get("total_trades", 0),
-                        }
-                    )
-
-        etf_r = _run_etf_backtest(conn, start_date=start_date, end_date=end_date)
-        if etf_r:
-            results.append(
-                {
-                    "symbol": "ETF_POOL",
-                    "name": "ETF轮动组合",
-                    "strategy": "etf_rotation",
-                    "total_return": etf_r["total_return"],
-                    "sharpe": etf_r["sharpe"],
-                    "max_drawdown": etf_r["max_drawdown"],
-                    "win_rate": etf_r.get("win_rate", 0),
-                    "total_trades": etf_r.get("total_trades", 0),
-                }
-            )
-
-        results.sort(key=lambda x: x["total_return"], reverse=True)
-        return {"results": results, "count": len(results)}
-    finally:
-        conn.close()
 
 
 @app.get("/api/strategies/picks")
@@ -1385,8 +1672,195 @@ def get_etf_picks(date: Optional[str] = None):
         conn.close()
 
 
+def _tdx_sma_chip(x, n, m):
+    """TDX-style SMA used for ZLCMQ calculation."""
+    y = np.empty(len(x))
+    y[0] = x[0]
+    for i in range(1, len(x)):
+        y[i] = (m * x[i] + (n - m) * y[i - 1]) / n
+    return y
+
+
+def _compute_zlcmq_vectorized(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute ZLCMQ + zlcmq_max5 + zlcmq_prev1 for all stocks in df.
+
+    df must be sorted by (ts_code, trade_date) and have columns:
+    ts_code, trade_date, close, high, low
+    """
+    g = df.groupby("ts_code", sort=False)
+    df["low_75"] = g["low"].transform(lambda s: s.rolling(75, min_periods=1).min())
+    df["high_75"] = g["high"].transform(lambda s: s.rolling(75, min_periods=1).max())
+
+    var7_raw = np.where(
+        (df["high_75"] - df["low_75"]) / 100.0 > 1e-10,
+        (df["close"] - df["low_75"]) / ((df["high_75"] - df["low_75"]) / 100.0),
+        0.0,
+    )
+    var7_raw = np.nan_to_num(var7_raw, nan=0.0)
+
+    codes = df["ts_code"].values
+    boundaries = np.where(codes[:-1] != codes[1:])[0] + 1
+    boundaries = np.concatenate([[0], boundaries, [len(codes)]])
+    zlcmq_arr = np.empty(len(df), dtype=np.float64)
+    for start, end in zip(boundaries[:-1], boundaries[1:]):
+        seg = var7_raw[start:end]
+        v8 = _tdx_sma_chip(seg, 20, 1)
+        v8s = _tdx_sma_chip(v8, 15, 1)
+        vara = 3.0 * v8 - 2.0 * v8s
+        zlcmq_arr[start:end] = 100.0 - vara
+
+    df["zlcmq"] = zlcmq_arr
+    df["zlcmq_max5"] = g["zlcmq"].transform(lambda s: s.rolling(5, min_periods=1).max())
+    df["zlcmq_prev1"] = g["zlcmq"].transform(lambda s: s.shift(1))
+    return df
+
+
+def _compute_stock_features(conn, date):
+    """Compute ALL stock features needed by ALL strategies in one vectorized pass.
+
+    Loads 280 trading days of data (enough for top_bottom which needs 250+).
+    Returns a DataFrame with all features, or None if insufficient data.
+    """
+    trading_dates_rows = conn.execute(
+        "SELECT DISTINCT trade_date FROM daily_quotes WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 280",
+        (date,),
+    ).fetchall()
+    if len(trading_dates_rows) < 30:
+        return None
+
+    min_date = trading_dates_rows[-1][0]
+
+    df = pd.read_sql(
+        "SELECT ts_code, trade_date, open, high, low, close, vol, pct_chg FROM daily_quotes WHERE trade_date >= ? AND trade_date <= ? ORDER BY ts_code, trade_date",
+        conn,
+        params=[min_date, date],
+    )
+    if df.empty:
+        return None
+
+    for col in ("close", "open", "high", "low", "vol"):
+        df[col] = df[col].astype(np.float64)
+
+    g = df.groupby("ts_code", sort=False)
+
+    # Returns
+    df["returns_1d"] = g["close"].transform(lambda s: s.pct_change(1))
+    df["returns_5d"] = g["close"].transform(lambda s: s.pct_change(5))
+    df["returns_20d"] = g["close"].transform(lambda s: s.pct_change(20))
+
+    # Volatility
+    df["volatility_5d"] = g["returns_1d"].transform(
+        lambda s: s.rolling(5, min_periods=1).std()
+    )
+    df["volatility_20d"] = g["returns_1d"].transform(
+        lambda s: s.rolling(20, min_periods=1).std()
+    )
+
+    # Moving averages
+    df["ma5"] = g["close"].transform(lambda s: s.rolling(5, min_periods=1).mean())
+    df["ma10"] = g["close"].transform(lambda s: s.rolling(10, min_periods=10).mean())
+    df["ma20"] = g["close"].transform(lambda s: s.rolling(20, min_periods=1).mean())
+    df["ma60"] = g["close"].transform(lambda s: s.rolling(60, min_periods=1).mean())
+
+    # Previous MAs (for trend_ma first-alignment detection)
+    df["prev_ma5"] = g["ma5"].transform(lambda s: s.shift(1))
+    df["prev_ma10"] = g["ma10"].transform(lambda s: s.shift(1))
+    df["prev_ma20"] = g["ma20"].transform(lambda s: s.shift(1))
+    df["prev_ma60"] = g["ma60"].transform(lambda s: s.shift(1))
+
+    # Volume features
+    df["vol_ma20"] = g["vol"].transform(lambda s: s.rolling(20, min_periods=1).mean())
+    df["volume_ratio"] = np.where(df["vol_ma20"] > 0, df["vol"] / df["vol_ma20"], 1.0)
+
+    # High / price ratios
+    df["high20"] = g["high"].transform(
+        lambda s: s.rolling(20, min_periods=1).max().shift(1)
+    )
+    df["price_to_high20"] = np.where(
+        df["high20"] > 0, df["close"] / df["high20"] - 1.0, 0.0
+    )
+    df["price_to_ma20"] = np.where(df["ma20"] > 0, df["close"] / df["ma20"] - 1.0, 0.0)
+    df["ma5_to_ma20"] = np.where(df["ma20"] > 0, df["ma5"] / df["ma20"] - 1.0, 0.0)
+    df["vol_to_vol_ma"] = np.where(
+        df["vol_ma20"] > 0, df["vol"] / df["vol_ma20"] - 1.0, 0.0
+    )
+
+    # RSI 14
+    delta = g["close"].transform(lambda s: s.diff())
+    gain = delta.groupby(df["ts_code"]).transform(
+        lambda s: s.clip(lower=0).rolling(14, min_periods=1).mean()
+    )
+    loss = delta.groupby(df["ts_code"]).transform(
+        lambda s: (-s.clip(upper=0)).rolling(14, min_periods=1).mean()
+    )
+    df["rsi_14"] = 100.0 - 100.0 / (1.0 + gain / (loss + 1e-10))
+
+    df["cumcount"] = g.cumcount()
+
+    _compute_zlcmq_vectorized(df)
+
+    # MACD features (params: 15/26/13 matching backtest engine)
+    ema_fast = g["close"].transform(lambda s: s.ewm(span=15, adjust=False).mean())
+    ema_slow = g["close"].transform(lambda s: s.ewm(span=26, adjust=False).mean())
+    df["dif"] = ema_fast - ema_slow
+    df["dea"] = g["dif"].transform(lambda s: s.ewm(span=13, adjust=False).mean())
+    df["macd_hist"] = 2.0 * (df["dif"] - df["dea"])
+    df["prev_dif"] = g["dif"].shift(1)
+    df["prev_dea"] = g["dea"].shift(1)
+
+    # Bollinger features (params: 25-period, 2.5x matching backtest engine)
+    df["bb_mid"] = g["close"].transform(lambda s: s.rolling(25, min_periods=25).mean())
+    df["bb_std"] = g["close"].transform(lambda s: s.rolling(25, min_periods=25).std())
+    df["bb_upper"] = df["bb_mid"] + 2.5 * df["bb_std"]
+    df["bb_lower"] = df["bb_mid"] - 2.5 * df["bb_std"]
+    df["prev_close"] = g["close"].shift(1)
+    df["prev_lower"] = g["bb_lower"].shift(1)
+    df["dist_to_lower"] = np.where(
+        df["bb_lower"] != 0,
+        (df["close"] - df["bb_lower"]) / df["bb_lower"],
+        0.0,
+    )
+
+    # Top/Bottom features (通达信顶底图 indicator)
+    df["ma13"] = g["close"].transform(lambda s: s.rolling(13, min_periods=13).mean())
+    df["var4_tb"] = np.where(
+        df["ma13"] > 0,
+        100.0 - np.abs((df["close"] - df["ma13"]) / df["ma13"] * 100.0),
+        50.0,
+    )
+    try:
+        from scipy.stats import percentileofscore
+
+        df["varb_tb"] = (
+            g["close"]
+            .transform(
+                lambda s: s.rolling(250, min_periods=20).apply(
+                    lambda x: percentileofscore(x, x[-1]), raw=True
+                )
+            )
+            .fillna(50.0)
+        )
+    except Exception:
+        df["varb_tb"] = 50.0
+    df["score_tb"] = df["var4_tb"] - df["varb_tb"]
+    df["score_max5_prev_tb"] = g["score_tb"].transform(
+        lambda s: s.shift(1).rolling(5, min_periods=1).max()
+    )
+
+    return df
+
+
 @app.get("/api/strategies/chip-picks")
 def get_chip_picks(date: Optional[str] = None, refresh: bool = False):
+    """Chip strategy picks using relaxed backtest-engine conditions.
+
+    Conditions (from backtest/dynamic_engine.py _chip_strategy):
+    - ZLCMQ in [60, 92]
+    - zlcmq_max5 >= 85 (was_high_zone)
+    - zlcmq < zlcmq_prev1 (currently declining)
+    - (zlcmq_max5 - zlcmq) <= 35 (not falling too fast)
+    - Price stable: (close >= open) OR (close > prev_close)
+    """
     conn = _get_db_conn()
     try:
         if not date:
@@ -1394,6 +1868,15 @@ def get_chip_picks(date: Optional[str] = None, refresh: bool = False):
                 "SELECT MAX(trade_date) FROM etf_daily_quotes"
             ).fetchone()
             date = row[0] if row and row[0] else None
+
+        if not date:
+            return {
+                "enhanced_chip": {
+                    "description": "筹码策略(回测引擎条件)",
+                    "buy_signals": [],
+                    "sell_signals": [],
+                }
+            }
 
         if not refresh:
             conn.execute("""
@@ -1408,65 +1891,137 @@ def get_chip_picks(date: Optional[str] = None, refresh: bool = False):
                 (f"chip_picks_{date}",),
             ).fetchone()
             if cached:
-                import json as _json
+                return json.loads(cached[0])
 
-                return _json.loads(cached[0])
+        trading_dates_rows = conn.execute(
+            "SELECT DISTINCT trade_date FROM daily_quotes WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 100",
+            (date,),
+        ).fetchall()
+        if not trading_dates_rows:
+            return {
+                "enhanced_chip": {
+                    "description": "筹码策略(回测引擎条件)",
+                    "buy_signals": [],
+                    "sell_signals": [],
+                }
+            }
 
-        stocks = [
-            r[0]
-            for r in conn.execute(
-                "SELECT DISTINCT ts_code FROM daily_quotes ORDER BY ts_code"
-            ).fetchall()
-        ]
+        min_date = trading_dates_rows[-1][0]
 
-        chip_buys, chip_sells = [], []
-        for ts_code in stocks:
-            df = pd.read_sql(
-                "SELECT * FROM daily_quotes WHERE ts_code=? AND trade_date <= ? ORDER BY trade_date DESC LIMIT 100",
-                conn,
-                params=[ts_code, date],
+        df = pd.read_sql(
+            "SELECT ts_code, trade_date, open, high, low, close, vol FROM daily_quotes WHERE trade_date >= ? AND trade_date <= ? ORDER BY ts_code, trade_date",
+            conn,
+            params=[min_date, date],
+        )
+        if df.empty:
+            return {
+                "enhanced_chip": {
+                    "description": "筹码策略(回测引擎条件)",
+                    "buy_signals": [],
+                    "sell_signals": [],
+                }
+            }
+
+        for col in ("close", "open", "high", "low", "vol"):
+            df[col] = df[col].astype(np.float64)
+
+        g = df.groupby("ts_code", sort=False)
+        df["returns_1d"] = g["close"].transform(lambda s: s.pct_change(1))
+        df["cumcount"] = g.cumcount()
+
+        df = _compute_zlcmq_vectorized(df)
+
+        day = df[df["trade_date"] == date].copy()
+
+        day = day[day["cumcount"] >= 74]
+        if day.empty:
+            result = {
+                "enhanced_chip": {
+                    "description": "筹码策略(回测引擎条件)",
+                    "buy_signals": [],
+                    "sell_signals": [],
+                }
+            }
+            conn.execute(
+                "INSERT OR REPLACE INTO api_cache (cache_key, data) VALUES (?, ?)",
+                (f"chip_picks_{date}", json.dumps(result, ensure_ascii=False)),
             )
-            if len(df) < 60:
-                continue
-            df = df.sort_values("trade_date").reset_index(drop=True)
-            df["ts_code"] = ts_code
-            try:
-                from strategies.enhanced_chip_strategy import EnhancedChipStrategy
+            conn.commit()
+            return result
 
-                s = EnhancedChipStrategy()
-                signals = s.calculate_signals(df)
-                if signals:
-                    last = signals[-1]
-                    last_date_str = str(last.trade_date)
-                    recent_threshold = date[:8] if date else "99999999"
-                    if last_date_str >= recent_threshold:
-                        entry = {
-                            "symbol": ts_code,
-                            "name": _get_stock_name_safe(ts_code),
-                            "action": last.action,
-                            "price": round(float(last.price), 2),
-                            "date": last_date_str,
-                            "reason": last.reason,
-                        }
-                        if last.action == "buy":
-                            chip_buys.append(entry)
-                        elif last.action == "sell":
-                            chip_sells.append(entry)
-            except Exception as e:
-                logger.exception(f"Strategy failed: {e}")
+        cur_z = day["zlcmq"].values
+        z5_max = day["zlcmq_max5"].values
+        z_prev = day["zlcmq_prev1"].values
+        cur_close = day["close"].values
+        cur_open = day["open"].values
+        prev_close = np.where(
+            day["returns_1d"].isna(),
+            cur_close,
+            cur_close / (1.0 + day["returns_1d"].fillna(0).values),
+        )
+
+        valid = (~np.isnan(cur_z)) & (cur_z >= 60) & (cur_z <= 92)
+        day = day[valid]
+        if day.empty:
+            result = {
+                "enhanced_chip": {
+                    "description": "筹码策略(回测引擎条件)",
+                    "buy_signals": [],
+                    "sell_signals": [],
+                }
+            }
+            conn.execute(
+                "INSERT OR REPLACE INTO api_cache (cache_key, data) VALUES (?, ?)",
+                (f"chip_picks_{date}", json.dumps(result, ensure_ascii=False)),
+            )
+            conn.commit()
+            return result
+
+        cur_z = day["zlcmq"].values
+        z5_max = day["zlcmq_max5"].values
+        z_prev = day["zlcmq_prev1"].values
+        cur_close = day["close"].values
+        cur_open = day["open"].values
+        prev_close = np.where(
+            day["returns_1d"].isna(),
+            cur_close,
+            cur_close / (1.0 + day["returns_1d"].fillna(0).values),
+        )
+
+        was_high_zone = z5_max >= 85
+        is_declining = cur_z < z_prev
+        not_too_fast = (z5_max - cur_z) <= 35
+        is_stable = (cur_close >= cur_open) | (cur_close > prev_close)
+
+        passed = day[was_high_zone & is_declining & not_too_fast & is_stable].copy()
+        if not passed.empty:
+            passed = passed.sort_values("zlcmq", ascending=False).head(5)
+
+        chip_buys = []
+        for _, row in passed.iterrows():
+            chip_buys.append(
+                {
+                    "symbol": row["ts_code"],
+                    "name": _get_stock_name_safe(row["ts_code"]),
+                    "action": "buy",
+                    "price": round(float(row["close"]), 2),
+                    "date": date,
+                    "zlcmq": round(float(row["zlcmq"]), 1),
+                    "zlcmq_max5": round(float(row["zlcmq_max5"]), 1),
+                    "reason": f"筹码高位回落企稳 ZLCMQ={round(float(row['zlcmq']), 1)} 峰值={round(float(row['zlcmq_max5']), 1)}",
+                }
+            )
 
         result = {
             "enhanced_chip": {
-                "description": "增强筹码策略",
+                "description": "筹码策略(回测引擎条件)",
                 "buy_signals": chip_buys,
-                "sell_signals": chip_sells,
+                "sell_signals": [],
             }
         }
-        import json as _json
-
         conn.execute(
             "INSERT OR REPLACE INTO api_cache (cache_key, data) VALUES (?, ?)",
-            (f"chip_picks_{date}", _json.dumps(result, ensure_ascii=False)),
+            (f"chip_picks_{date}", json.dumps(result, ensure_ascii=False)),
         )
         conn.commit()
         return result
@@ -1476,6 +2031,10 @@ def get_chip_picks(date: Optional[str] = None, refresh: bool = False):
 
 @app.get("/api/strategies/ml-picks")
 def get_ml_picks(date: Optional[str] = None, refresh: bool = False):
+    """ML picks using pooled HistGradientBoosting (same as backtest engine).
+
+    Trains ONE model on ALL stocks pooled together instead of per-stock training.
+    """
     conn = _get_db_conn()
     try:
         if not date:
@@ -1483,6 +2042,14 @@ def get_ml_picks(date: Optional[str] = None, refresh: bool = False):
                 "SELECT MAX(trade_date) FROM etf_daily_quotes"
             ).fetchone()
             date = row[0] if row and row[0] else None
+
+        if not date:
+            return {
+                "ml_stock": {
+                    "description": "ML选股 (HistGradientBoosting 池化)",
+                    "picks": [],
+                }
+            }
 
         if not refresh:
             conn.execute("""
@@ -1497,34 +2064,681 @@ def get_ml_picks(date: Optional[str] = None, refresh: bool = False):
                 (f"ml_picks_{date}",),
             ).fetchone()
             if cached:
-                import json as _json
+                return json.loads(cached[0])
 
-                return _json.loads(cached[0])
+        FEATURE_COLS = [
+            "returns_20d",
+            "volatility_20d",
+            "returns_5d",
+            "volatility_5d",
+            "price_to_ma20",
+            "ma5_to_ma20",
+            "vol_to_vol_ma",
+            "price_to_high20",
+            "volume_ratio",
+            "rsi_14",
+        ]
+
+        trading_dates_rows = conn.execute(
+            "SELECT DISTINCT trade_date FROM daily_quotes WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 176",
+            (date,),
+        ).fetchall()
+        if len(trading_dates_rows) < 30:
+            result = {
+                "ml_stock": {
+                    "description": "ML选股 (HistGradientBoosting 池化)",
+                    "picks": [],
+                }
+            }
+            conn.execute(
+                "INSERT OR REPLACE INTO api_cache (cache_key, data) VALUES (?, ?)",
+                (f"ml_picks_{date}", json.dumps(result, ensure_ascii=False)),
+            )
+            conn.commit()
+            return result
+
+        min_date = trading_dates_rows[-1][0]
+
+        df = pd.read_sql(
+            "SELECT ts_code, trade_date, open, high, low, close, vol FROM daily_quotes WHERE trade_date >= ? AND trade_date <= ? ORDER BY ts_code, trade_date",
+            conn,
+            params=[min_date, date],
+        )
+        if df.empty:
+            result = {
+                "ml_stock": {
+                    "description": "ML选股 (HistGradientBoosting 池化)",
+                    "picks": [],
+                }
+            }
+            conn.execute(
+                "INSERT OR REPLACE INTO api_cache (cache_key, data) VALUES (?, ?)",
+                (f"ml_picks_{date}", json.dumps(result, ensure_ascii=False)),
+            )
+            conn.commit()
+            return result
+
+        for col in ("close", "open", "high", "low", "vol"):
+            df[col] = df[col].astype(np.float64)
+
+        g = df.groupby("ts_code", sort=False)
+        df["returns_1d"] = g["close"].transform(lambda s: s.pct_change(1))
+        df["returns_5d"] = g["close"].transform(lambda s: s.pct_change(5))
+        df["returns_20d"] = g["close"].transform(lambda s: s.pct_change(20))
+        df["volatility_5d"] = g["returns_1d"].transform(
+            lambda s: s.rolling(5, min_periods=1).std()
+        )
+        df["volatility_20d"] = g["returns_1d"].transform(
+            lambda s: s.rolling(20, min_periods=1).std()
+        )
+        df["ma5"] = g["close"].transform(lambda s: s.rolling(5, min_periods=1).mean())
+        df["ma20"] = g["close"].transform(lambda s: s.rolling(20, min_periods=1).mean())
+        df["vol_ma20"] = g["vol"].transform(
+            lambda s: s.rolling(20, min_periods=1).mean()
+        )
+        df["volume_ratio"] = np.where(
+            df["vol_ma20"] > 0, df["vol"] / df["vol_ma20"], 1.0
+        )
+        df["high20"] = g["high"].transform(lambda s: s.rolling(20, min_periods=1).max())
+        df["price_to_high20"] = np.where(
+            df["high20"] > 0, df["close"] / df["high20"] - 1.0, 0.0
+        )
+        df["price_to_ma20"] = np.where(
+            df["ma20"] > 0, df["close"] / df["ma20"] - 1.0, 0.0
+        )
+        df["ma5_to_ma20"] = np.where(df["ma20"] > 0, df["ma5"] / df["ma20"] - 1.0, 0.0)
+        df["vol_to_vol_ma"] = np.where(
+            df["vol_ma20"] > 0, df["vol"] / df["vol_ma20"] - 1.0, 0.0
+        )
+
+        delta = g["close"].transform(lambda s: s.diff())
+        gain = delta.groupby(df["ts_code"]).transform(
+            lambda s: s.clip(lower=0).rolling(14, min_periods=1).mean()
+        )
+        loss = delta.groupby(df["ts_code"]).transform(
+            lambda s: (-s.clip(upper=0)).rolling(14, min_periods=1).mean()
+        )
+        df["rsi_14"] = 100.0 - 100.0 / (1.0 + gain / (loss + 1e-10))
+
+        df["cumcount"] = g.cumcount()
+        df["future_close_5d"] = g["close"].transform(lambda s: s.shift(-5))
+        df["label_5d_up"] = (df["future_close_5d"] > df["close"]).astype(np.float64)
+
+        pool = df[df["cumcount"] >= 49].dropna(subset=FEATURE_COLS)
+        if pool.shape[0] < 100:
+            result = {
+                "ml_stock": {
+                    "description": "ML选股 (HistGradientBoosting 池化)",
+                    "picks": [],
+                }
+            }
+            conn.execute(
+                "INSERT OR REPLACE INTO api_cache (cache_key, data) VALUES (?, ?)",
+                (f"ml_picks_{date}", json.dumps(result, ensure_ascii=False)),
+            )
+            conn.commit()
+            return result
+
+        labels = pool["label_5d_up"].values
+        has_label = ~np.isnan(labels)
+        X_all = pool[FEATURE_COLS].values
+        y_all = labels
+        X_train = X_all[has_label]
+        y_train = np.nan_to_num(y_all[has_label], nan=0.0)
+
+        if len(X_train) < 50 or len(np.unique(y_train)) < 2:
+            result = {
+                "ml_stock": {
+                    "description": "ML选股 (HistGradientBoosting 池化)",
+                    "picks": [],
+                }
+            }
+            conn.execute(
+                "INSERT OR REPLACE INTO api_cache (cache_key, data) VALUES (?, ?)",
+                (f"ml_picks_{date}", json.dumps(result, ensure_ascii=False)),
+            )
+            conn.commit()
+            return result
+
+        from sklearn.ensemble import HistGradientBoostingClassifier
+
+        model = HistGradientBoostingClassifier(
+            max_iter=50,
+            max_depth=3,
+            learning_rate=0.1,
+            min_samples_leaf=10,
+            random_state=42,
+        )
+        model.fit(X_train, y_train)
+
+        day = df[df["trade_date"] == date].dropna(subset=FEATURE_COLS)
+        if day.empty:
+            result = {
+                "ml_stock": {
+                    "description": "ML选股 (HistGradientBoosting 池化)",
+                    "picks": [],
+                }
+            }
+            conn.execute(
+                "INSERT OR REPLACE INTO api_cache (cache_key, data) VALUES (?, ?)",
+                (f"ml_picks_{date}", json.dumps(result, ensure_ascii=False)),
+            )
+            conn.commit()
+            return result
+
+        X_score = day[FEATURE_COLS].values
+        proba = model.predict_proba(X_score)
+        prob_up = proba[:, 1] if proba.shape[1] > 1 else proba[:, 0]
+
+        passed = day[prob_up > 0.45].copy()
+        if not passed.empty:
+            passed["prob_up"] = prob_up[prob_up > 0.45]
+            passed = passed.sort_values("prob_up", ascending=False)
 
         ml_picks = []
-        try:
-            from strategies.ml_stock_strategy import generate_daily_stock_picks
-
-            ml_picks = generate_daily_stock_picks(conn, date, top_n=10)
-        except Exception as e:
-            logger.exception(f"Strategy failed: {e}")
+        for rank, (_, row) in enumerate(passed.head(5).iterrows(), 1):
+            p = round(float(row["prob_up"]) * 100)
+            momentum_str = (
+                f"{row['returns_20d'] * 100:.1f}"
+                if pd.notna(row.get("returns_20d"))
+                else "N/A"
+            )
+            ml_picks.append(
+                {
+                    "symbol": row["ts_code"],
+                    "name": _get_stock_name_safe(row["ts_code"]),
+                    "prediction": 1,
+                    "prob_up": round(float(row["prob_up"]), 4),
+                    "date": date,
+                    "close": round(float(row["close"]), 2),
+                    "reason": f"ML预测上涨概率{p}%，动量{momentum_str}%",
+                }
+            )
 
         result = {
             "ml_stock": {
-                "description": "ML选股 (HistGradientBoosting)",
+                "description": "ML选股 (HistGradientBoosting 池化)",
                 "picks": ml_picks,
             }
         }
-
-        import json as _json
-
         conn.execute(
             "INSERT OR REPLACE INTO api_cache (cache_key, data) VALUES (?, ?)",
-            (f"ml_picks_{date}", _json.dumps(result, ensure_ascii=False)),
+            (f"ml_picks_{date}", json.dumps(result, ensure_ascii=False)),
         )
         conn.commit()
-
         return result
+    finally:
+        conn.close()
+
+
+@app.get("/api/strategies/multifactor-picks")
+def get_multifactor_picks(date: Optional[str] = None, refresh: bool = False):
+    """Three-factor scoring: score = 0.4*(-close) + 0.3*returns_20d + 0.3*(1/volatility_20d).
+
+    Stocks with cumcount >= 29, sorted by score descending, top 10.
+    """
+    conn = _get_db_conn()
+    try:
+        if not date:
+            row = conn.execute(
+                "SELECT MAX(trade_date) FROM etf_daily_quotes"
+            ).fetchone()
+            date = row[0] if row and row[0] else None
+
+        if not date:
+            return {
+                "multifactor": {
+                    "description": "三因子选股 (市值+动量+质量)",
+                    "picks": [],
+                }
+            }
+
+        if not refresh:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS api_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    data TEXT NOT NULL,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            cached = conn.execute(
+                "SELECT data FROM api_cache WHERE cache_key=? AND created_at > datetime('now', '-1 day')",
+                (f"multifactor_picks_{date}",),
+            ).fetchone()
+            if cached:
+                return json.loads(cached[0])
+
+        trading_dates_rows = conn.execute(
+            "SELECT DISTINCT trade_date FROM daily_quotes WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 31",
+            (date,),
+        ).fetchall()
+        if len(trading_dates_rows) < 5:
+            result = {
+                "multifactor": {
+                    "description": "三因子选股 (市值+动量+质量)",
+                    "picks": [],
+                }
+            }
+            conn.execute(
+                "INSERT OR REPLACE INTO api_cache (cache_key, data) VALUES (?, ?)",
+                (f"multifactor_picks_{date}", json.dumps(result, ensure_ascii=False)),
+            )
+            conn.commit()
+            return result
+
+        min_date = trading_dates_rows[-1][0]
+
+        df = pd.read_sql(
+            "SELECT ts_code, trade_date, open, high, low, close, vol FROM daily_quotes WHERE trade_date >= ? AND trade_date <= ? ORDER BY ts_code, trade_date",
+            conn,
+            params=[min_date, date],
+        )
+        if df.empty:
+            result = {
+                "multifactor": {
+                    "description": "三因子选股 (市值+动量+质量)",
+                    "picks": [],
+                }
+            }
+            conn.execute(
+                "INSERT OR REPLACE INTO api_cache (cache_key, data) VALUES (?, ?)",
+                (f"multifactor_picks_{date}", json.dumps(result, ensure_ascii=False)),
+            )
+            conn.commit()
+            return result
+
+        for col in ("close", "open", "high", "low", "vol"):
+            df[col] = df[col].astype(np.float64)
+
+        g = df.groupby("ts_code", sort=False)
+        df["returns_1d"] = g["close"].transform(lambda s: s.pct_change(1))
+        df["returns_20d"] = g["close"].transform(lambda s: s.pct_change(20))
+        df["volatility_20d"] = g["returns_1d"].transform(
+            lambda s: s.rolling(20, min_periods=1).std()
+        )
+        df["cumcount"] = g.cumcount()
+
+        day = df[df["trade_date"] == date].copy()
+        day = day[day["cumcount"] >= 29]
+        if day.empty:
+            result = {
+                "multifactor": {
+                    "description": "三因子选股 (市值+动量+质量)",
+                    "picks": [],
+                }
+            }
+            conn.execute(
+                "INSERT OR REPLACE INTO api_cache (cache_key, data) VALUES (?, ?)",
+                (f"multifactor_picks_{date}", json.dumps(result, ensure_ascii=False)),
+            )
+            conn.commit()
+            return result
+
+        momentum = day["returns_20d"].values
+        volatility = day["volatility_20d"].values
+        quality = np.where(
+            (volatility == 0) | np.isnan(volatility),
+            0.0,
+            1.0 / (volatility + 1e-6),
+        )
+        market_cap_proxy = day["close"].values
+        scores = (
+            0.4 * (-market_cap_proxy)
+            + 0.3 * np.nan_to_num(momentum, nan=0.0)
+            + 0.3 * quality
+        )
+        day["score"] = scores
+        day = day.sort_values("score", ascending=False)
+
+        picks = []
+        for rank, (_, row) in enumerate(day.head(5).iterrows(), 1):
+            momentum_str = (
+                f"{row['returns_20d'] * 100:.1f}"
+                if pd.notna(row.get("returns_20d"))
+                else "N/A"
+            )
+            picks.append(
+                {
+                    "symbol": row["ts_code"],
+                    "name": _get_stock_name_safe(row["ts_code"]),
+                    "close": round(float(row["close"]), 2),
+                    "score": round(float(row["score"]), 2),
+                    "momentum_20d": round(float(row["returns_20d"]), 4)
+                    if pd.notna(row["returns_20d"])
+                    else 0.0,
+                    "volatility_20d": round(float(row["volatility_20d"]), 4)
+                    if pd.notna(row["volatility_20d"])
+                    else 0.0,
+                    "rank": rank,
+                    "reason": f"三因子评分#{rank} 动量{momentum_str}% 低波动",
+                }
+            )
+
+        result = {
+            "multifactor": {
+                "description": "三因子选股 (市值+动量+质量)",
+                "picks": picks,
+            }
+        }
+        conn.execute(
+            "INSERT OR REPLACE INTO api_cache (cache_key, data) VALUES (?, ?)",
+            (f"multifactor_picks_{date}", json.dumps(result, ensure_ascii=False)),
+        )
+        conn.commit()
+        return result
+    finally:
+        conn.close()
+
+
+_STRATEGY_DESCRIPTIONS = {
+    "vol_breakout": "爆量突破策略 — 低位横盘后爆量突破",
+    "dragon_first_yin": "龙头首阴策略 — 连续涨停后首阴低吸",
+    "trend_ma": "均线趋势策略 — 多头排列首次形成",
+    "top_bottom": "顶底图策略 — 通达信顶底图底部信号",
+    "bollinger_break": "布林带突破策略 — 触及下轨超卖反弹",
+    "rsi_momentum": "RSI动量策略 — RSI超卖反弹",
+    "macd_cross": "MACD金叉策略 — MACD金叉确认",
+}
+
+
+def _apply_strategy_filter(strategy_name: str, feat_df, date, conn):
+    """Apply strategy filter logic on the feature DataFrame for a given date.
+
+    Returns a list of dicts with keys: ts_code, reason, sort_key.
+    """
+    day = feat_df[feat_df["trade_date"] == date].copy()
+    if day.empty:
+        return []
+
+    if strategy_name == "vol_breakout":
+        day = day[day["cumcount"] >= 25]
+        if day.empty:
+            return []
+        signals = day[
+            (day["volatility_5d"] < 0.15)
+            & (day["vol"] > day["vol_ma20"] * 2.0)
+            & (day["close"] > day["high20"])
+            & (day["close"] > day["ma20"])
+        ].copy()
+        if signals.empty:
+            return []
+        signals = signals.sort_values("volume_ratio", ascending=False)
+        results = []
+        for _, row in signals.head(5).iterrows():
+            vr = float(row["volume_ratio"]) if pd.notna(row["volume_ratio"]) else 0
+            results.append(
+                {
+                    "ts_code": row["ts_code"],
+                    "reason": f"低位横盘后爆量突破20日高点，量比{vr:.1f}倍",
+                }
+            )
+        return results
+
+    elif strategy_name == "dragon_first_yin":
+        day = day[day["cumcount"] >= 40]
+        if day.empty:
+            return []
+        trading_dates_sorted = sorted(feat_df["trade_date"].unique())
+        date_idx = (
+            trading_dates_sorted.index(date) if date in trading_dates_sorted else -1
+        )
+        if date_idx < 1:
+            return []
+        prev_date = trading_dates_sorted[date_idx - 1]
+        yesterday = feat_df[feat_df["trade_date"] == prev_date][
+            ["ts_code", "pct_chg", "open"]
+        ].copy()
+        yesterday = yesterday.rename(
+            columns={"pct_chg": "prev_pct_chg", "open": "prev_open"}
+        )
+        today_df = feat_df[feat_df["trade_date"] == date][
+            ["ts_code", "open", "close"]
+        ].copy()
+        merged = today_df.merge(yesterday, on="ts_code", how="inner")
+        if merged.empty:
+            return []
+        signals = merged[
+            (merged["prev_pct_chg"] > 9.5)
+            & (merged["close"] < merged["open"])
+            & (merged["close"] > merged["prev_open"])
+        ].copy()
+        if signals.empty:
+            return []
+        valid_codes = set(signals["ts_code"].values)
+        day_filtered = day[day["ts_code"].isin(valid_codes)]
+        signals = signals[signals["ts_code"].isin(day_filtered["ts_code"].values)]
+        signals = signals.sort_values("prev_pct_chg", ascending=False)
+        results = []
+        for _, row in signals.head(5).iterrows():
+            pct = float(row["prev_pct_chg"]) if pd.notna(row["prev_pct_chg"]) else 0
+            results.append(
+                {
+                    "ts_code": row["ts_code"],
+                    "reason": f"昨日涨停{pct:.1f}%后首阴回踩，支撑位守住",
+                }
+            )
+        return results
+
+    elif strategy_name == "trend_ma":
+        day = day[day["cumcount"] >= 35].dropna(
+            subset=["ma10", "prev_ma5", "prev_ma10", "prev_ma20", "prev_ma60"]
+        )
+        if day.empty:
+            return []
+        bull_today = (
+            (day["ma5"] > day["ma10"])
+            & (day["ma10"] > day["ma20"])
+            & (day["ma20"] > day["ma60"])
+        )
+        bull_yesterday = (
+            (day["prev_ma5"] > day["prev_ma10"])
+            & (day["prev_ma10"] > day["prev_ma20"])
+            & (day["prev_ma20"] > day["prev_ma60"])
+        )
+        signals = day[bull_today & ~bull_yesterday].copy()
+        if signals.empty:
+            return []
+        signals = signals.sort_values("ma5_to_ma20", ascending=False)
+        results = []
+        for _, row in signals.head(5).iterrows():
+            results.append(
+                {
+                    "ts_code": row["ts_code"],
+                    "reason": "均线系统首次多头排列，趋势启动信号",
+                }
+            )
+        return results
+
+    elif strategy_name == "top_bottom":
+        day = day[day["cumcount"] >= 250].dropna(subset=["score_tb"])
+        if day.empty:
+            return []
+        signals = day[
+            (day["score_tb"] > 10) & (day["score_tb"] > day["score_max5_prev_tb"])
+        ].copy()
+        if signals.empty:
+            return []
+        signals = signals.sort_values("score_tb", ascending=False)
+        results = []
+        for _, row in signals.head(5).iterrows():
+            sc = float(row["score_tb"]) if pd.notna(row["score_tb"]) else 0
+            results.append(
+                {
+                    "ts_code": row["ts_code"],
+                    "reason": f"顶底图指标得分{sc:.1f}，底部反弹信号",
+                }
+            )
+        return results
+
+    elif strategy_name == "bollinger_break":
+        day = day.dropna(subset=["bb_lower", "prev_close", "prev_lower"])
+        if day.empty:
+            return []
+        day = day[day["cumcount"] >= 30]
+        if day.empty:
+            return []
+        signals = day[
+            (day["prev_close"] > day["prev_lower"]) & (day["close"] <= day["bb_lower"])
+        ].copy()
+        if signals.empty:
+            return []
+        signals = signals.sort_values("dist_to_lower", ascending=True)
+        results = []
+        for _, row in signals.head(5).iterrows():
+            results.append(
+                {
+                    "ts_code": row["ts_code"],
+                    "reason": "触及布林带下轨，超卖反弹机会",
+                }
+            )
+        return results
+
+    elif strategy_name == "rsi_momentum":
+        day = day[day["cumcount"] >= 20]
+        if day.empty:
+            return []
+        signals = day[day["rsi_14"] < 25].copy()
+        if signals.empty:
+            return []
+        signals = signals.sort_values("rsi_14", ascending=True)
+        results = []
+        for _, row in signals.head(5).iterrows():
+            rsi = float(row["rsi_14"]) if pd.notna(row["rsi_14"]) else 0
+            results.append(
+                {
+                    "ts_code": row["ts_code"],
+                    "reason": f"RSI={rsi:.0f}严重超卖，技术反弹概率大",
+                }
+            )
+        return results
+
+    elif strategy_name == "macd_cross":
+        day = day.dropna(subset=["prev_dif", "prev_dea", "dif", "dea"])
+        if day.empty:
+            return []
+        day = day[day["cumcount"] >= 40]
+        if day.empty:
+            return []
+        signals = day[
+            (day["prev_dif"] <= day["prev_dea"]) & (day["dif"] > day["dea"])
+        ].copy()
+        if signals.empty:
+            return []
+        signals["macd_abs"] = np.abs(signals["macd_hist"].values)
+        signals = signals.sort_values("macd_abs", ascending=False)
+        results = []
+        for _, row in signals.head(5).iterrows():
+            results.append(
+                {
+                    "ts_code": row["ts_code"],
+                    "reason": "MACD金叉确认，多头力量增强",
+                }
+            )
+        return results
+
+    return []
+
+
+@app.get("/api/strategies/{strategy_name}/picks")
+def get_strategy_picks_by_name(
+    strategy_name: str,
+    date: Optional[str] = None,
+    refresh: bool = False,
+):
+    if strategy_name not in _STRATEGY_DESCRIPTIONS:
+        raise HTTPException(404, f"策略 {strategy_name} 不支持选股API")
+
+    conn = _get_db_conn()
+    try:
+        if not date:
+            row = conn.execute(
+                "SELECT MAX(trade_date) FROM etf_daily_quotes"
+            ).fetchone()
+            date = row[0] if row and row[0] else None
+
+        if not date:
+            return {
+                strategy_name: {
+                    "description": _STRATEGY_DESCRIPTIONS[strategy_name],
+                    "picks": [],
+                }
+            }
+
+        if not refresh:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS api_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    data TEXT NOT NULL,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            cached = conn.execute(
+                "SELECT data FROM api_cache WHERE cache_key=? AND created_at > datetime('now', '-1 day')",
+                (f"strategy_picks_{strategy_name}_{date}",),
+            ).fetchone()
+            if cached:
+                return json.loads(cached[0])
+
+        feat_df = _compute_stock_features(conn, date)
+        if feat_df is None:
+            result = {
+                strategy_name: {
+                    "description": _STRATEGY_DESCRIPTIONS[strategy_name],
+                    "picks": [],
+                }
+            }
+            conn.execute(
+                "INSERT OR REPLACE INTO api_cache (cache_key, data) VALUES (?, ?)",
+                (
+                    f"strategy_picks_{strategy_name}_{date}",
+                    json.dumps(result, ensure_ascii=False),
+                ),
+            )
+            conn.commit()
+            return result
+
+        filtered = _apply_strategy_filter(strategy_name, feat_df, date, conn)
+
+        picks = []
+        for rank, item in enumerate(filtered, 1):
+            ts_code = item["ts_code"]
+            price_row = feat_df[
+                (feat_df["ts_code"] == ts_code) & (feat_df["trade_date"] == date)
+            ]
+            price = float(price_row["close"].iloc[0]) if not price_row.empty else 0.0
+            picks.append(
+                {
+                    "symbol": ts_code,
+                    "name": _get_stock_name_safe(ts_code),
+                    "action": "buy",
+                    "price": round(price, 2),
+                    "date": date,
+                    "reason": item["reason"],
+                    "strategy": strategy_name,
+                    "rank": rank,
+                }
+            )
+
+        result = {
+            strategy_name: {
+                "description": _STRATEGY_DESCRIPTIONS[strategy_name],
+                "picks": picks,
+            }
+        }
+        conn.execute(
+            "INSERT OR REPLACE INTO api_cache (cache_key, data) VALUES (?, ?)",
+            (
+                f"strategy_picks_{strategy_name}_{date}",
+                json.dumps(result, ensure_ascii=False),
+            ),
+        )
+        conn.commit()
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"策略选股失败 {strategy_name}: {e}")
+        raise HTTPException(500, f"策略选股失败: {str(e)}")
     finally:
         conn.close()
 
@@ -2213,6 +3427,25 @@ def get_backtest_available_strategies():
                 "description": "市值+质量+动量三因子",
             },
             {"id": "etf_rotation", "name": "ETF轮动", "description": "动量排名轮动"},
+            {
+                "id": "vol_breakout",
+                "name": "爆量突破",
+                "description": "低位横盘后爆量突破",
+            },
+            {
+                "id": "dragon_first_yin",
+                "name": "龙头首阴",
+                "description": "连续涨停后首阴低吸",
+            },
+            {"id": "trend_ma", "name": "均线趋势", "description": "多头排列首次形成"},
+            {"id": "top_bottom", "name": "顶底图", "description": "顶底图指标底部信号"},
+            {
+                "id": "bollinger_break",
+                "name": "布林带突破",
+                "description": "触及下轨超卖反弹",
+            },
+            {"id": "rsi_momentum", "name": "RSI动量", "description": "RSI超卖反弹"},
+            {"id": "macd_cross", "name": "MACD金叉", "description": "MACD金叉确认"},
         ],
         "stock_pools": [
             {"id": "hs300", "name": "沪深300"},
