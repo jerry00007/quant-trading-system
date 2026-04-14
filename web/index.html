@@ -787,6 +787,7 @@ tbody tr:last-child td { border-bottom: none; }
     <button class="tab-btn active" data-tab="dashboard" onclick="switchTab('dashboard')">交易面板</button>
     <button class="tab-btn" data-tab="picks" onclick="switchTab('picks')">策略选股</button>
     <button class="tab-btn" data-tab="backtest" onclick="switchTab('backtest')">回测对比</button>
+    <button class="tab-btn" data-tab="dynamic-backtest" onclick="switchTab('dynamic-backtest')">🚀 动态回测</button>
     <button class="tab-btn" data-tab="settings" onclick="switchTab('settings')">⚙ 设置</button>
   </div>
 </nav>
@@ -1048,6 +1049,111 @@ tbody tr:last-child td { border-bottom: none; }
       <div class="bt-chart-selector" id="btChartSelector"></div>
       <div class="chart-container">
         <canvas id="btChart"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Tab Panel: Dynamic Backtest -->
+<div class="tab-panel" id="tab-dynamic-backtest">
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+    <span style="font-size:1.05rem;font-weight:700">🚀 动态多策略回测</span>
+    <span style="font-size:0.75rem;color:var(--text-muted)">每日扫描全市场选股，自动调仓</span>
+  </div>
+
+  <div class="section" style="margin-bottom:16px">
+    <div class="section-title"><span class="icon">⚙️</span> 回测配置</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px">
+      <div class="form-group">
+        <label style="font-size:0.76rem;color:var(--text-muted);font-weight:500;display:block;margin-bottom:4px">选择策略（可多选）</label>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px">
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:0.82rem">
+            <input type="checkbox" value="ma" class="dyn-strategy-check" checked> 均线
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:0.82rem">
+            <input type="checkbox" value="chip" class="dyn-strategy-check" checked> 筹码
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:0.82rem">
+            <input type="checkbox" value="ml" class="dyn-strategy-check"> ML
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:0.82rem">
+            <input type="checkbox" value="multifactor" class="dyn-strategy-check"> 多因子
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:0.82rem">
+            <input type="checkbox" value="etf_rotation" class="dyn-strategy-check"> ETF轮动
+          </label>
+        </div>
+      </div>
+      <div class="form-group">
+        <label style="font-size:0.76rem;color:var(--text-muted);font-weight:500;display:block;margin-bottom:4px">股票池</label>
+        <select class="input input-sm" id="dynStockPool" style="width:100%">
+          <option value="hs300">沪深300</option>
+          <option value="zz500" selected>中证500</option>
+          <option value="zz800">中证800</option>
+          <option value="all">全市场</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label style="font-size:0.76rem;color:var(--text-muted);font-weight:500;display:block;margin-bottom:4px">起始日期</label>
+        <input type="date" class="input input-sm" id="dynStartDate" value="2025-01-01" style="width:100%">
+      </div>
+      <div class="form-group">
+        <label style="font-size:0.76rem;color:var(--text-muted);font-weight:500;display:block;margin-bottom:4px">结束日期</label>
+        <input type="date" class="input input-sm" id="dynEndDate" value="2026-04-13" style="width:100%">
+      </div>
+      <div class="form-group">
+        <label style="font-size:0.76rem;color:var(--text-muted);font-weight:500;display:block;margin-bottom:4px">初始资金</label>
+        <input type="number" class="input input-sm" id="dynCapital" value="1000000" style="width:100%">
+      </div>
+      <div class="form-group">
+        <label style="font-size:0.76rem;color:var(--text-muted);font-weight:500;display:block;margin-bottom:4px">调仓周期（天）</label>
+        <input type="number" class="input input-sm" id="dynRebalance" value="20" min="5" max="60" style="width:100%">
+      </div>
+    </div>
+    <div style="margin-top:16px">
+      <button class="btn btn-primary" id="btnRunDynamicBacktest" onclick="runDynamicBacktest()">
+        <span>▶</span> 运行动态回测
+      </button>
+    </div>
+  </div>
+
+  <div id="dynResultsWrap" style="display:none">
+    <div class="section" style="margin-bottom:16px">
+      <div class="section-title"><span class="icon">🏆</span> 对比结果 <span id="dynWinner" style="font-size:0.82rem;font-weight:400;color:var(--accent-green);margin-left:8px"></span></div>
+      <div class="bt-result-row bt-result-header">
+        <span>策略</span><span>初始资金</span><span>最终价值</span><span>收益率</span><span>夏普率</span><span>最大回撤</span><span>交易次数</span>
+      </div>
+      <div id="dynResultsBody"></div>
+    </div>
+
+    <div class="section" style="margin-bottom:16px">
+      <div class="section-title"><span class="icon">📈</span> 收益曲线对比</div>
+      <div class="chart-container" style="height:400px">
+        <canvas id="dynChart"></canvas>
+      </div>
+    </div>
+
+    <div class="section">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div class="section-title" style="margin-bottom:0"><span class="icon">📋</span> 交割单</div>
+        <button class="btn btn-sm" onclick="downloadDelivery()">⬇ 下载CSV</button>
+      </div>
+      <div style="max-height:400px;overflow:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+          <thead>
+            <tr style="background:var(--bg-input)">
+              <th style="padding:8px;text-align:left;font-weight:500;color:var(--text-secondary)">日期</th>
+              <th style="padding:8px;text-align:left;font-weight:500;color:var(--text-secondary)">策略</th>
+              <th style="padding:8px;text-align:left;font-weight:500;color:var(--text-secondary)">股票</th>
+              <th style="padding:8px;text-align:left;font-weight:500;color:var(--text-secondary)">操作</th>
+              <th style="padding:8px;text-align:right;font-weight:500;color:var(--text-secondary)">价格</th>
+              <th style="padding:8px;text-align:right;font-weight:500;color:var(--text-secondary)">数量</th>
+              <th style="padding:8px;text-align:right;font-weight:500;color:var(--text-secondary)">金额</th>
+              <th style="padding:8px;text-align:left;font-weight:500;color:var(--text-secondary)">原因</th>
+            </tr>
+          </thead>
+          <tbody id="dynDeliveryBody"></tbody>
+        </table>
       </div>
     </div>
   </div>
@@ -2364,6 +2470,195 @@ function renderBtChart(data) {
       }
     }
   });
+}
+
+// ════════════════════════════════════════════════════════════════
+// Dynamic Backtest
+// ════════════════════════════════════════════════════════════════
+let dynChartInstance = null;
+let dynCurrentResult = null;
+
+async function runDynamicBacktest() {
+  const strategies = Array.from(document.querySelectorAll('.dyn-strategy-check:checked')).map(c => c.value);
+  if (!strategies.length) { showToast('请至少选择一个策略', 'error'); return; }
+
+  const stockPool = document.getElementById('dynStockPool').value;
+  const startDate = document.getElementById('dynStartDate').value;
+  const endDate = document.getElementById('dynEndDate').value;
+  const capital = parseFloat(document.getElementById('dynCapital').value) || 1000000;
+  const rebalance = parseInt(document.getElementById('dynRebalance').value) || 20;
+
+  const btn = document.getElementById('btnRunDynamicBacktest');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="loading-spinner" style="width:14px;height:14px;border-width:2px"></span> 回测中...';
+
+  const resultsWrap = document.getElementById('dynResultsWrap');
+  resultsWrap.style.display = 'none';
+
+  try {
+    const data = await api('/api/backtest/dynamic?' + new URLSearchParams({
+      strategies: strategies.join(','),
+      stock_pool: stockPool,
+      start_date: startDate,
+      end_date: endDate,
+      initial_capital: capital,
+      rebalance_days: rebalance,
+    }).toString());
+
+    if (data.run_id) {
+      const resultData = await pollBacktestResult(data.run_id);
+      dynCurrentResult = resultData;
+      renderDynamicResults(resultData);
+      resultsWrap.style.display = 'block';
+    }
+  } catch (e) {
+    console.error('Dynamic backtest failed:', e);
+    showToast('回测失败: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<span>▶</span> 运行动态回测';
+  }
+}
+
+async function pollBacktestResult(runId, maxAttempts = 60) {
+  for (let i = 0; i < maxAttempts; i++) {
+    const result = await api('/api/backtest/' + runId + '/result');
+    if (result && result.strategies && result.strategies.length > 0) {
+      return result;
+    }
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  throw new Error('回测超时');
+}
+
+function renderDynamicResults(result) {
+  const winner = result.winner;
+  document.getElementById('dynWinner').textContent = winner ? '🥇 获胜策略: ' + winner : '';
+
+  const strategies = result.strategies || [];
+  const tbody = document.getElementById('dynResultsBody');
+  
+  let html = '';
+  const sorted = [...strategies].sort((a, b) => (b.total_return || 0) - (a.total_return || 0));
+  
+  for (const r of sorted) {
+    const retColor = (r.total_return || 0) >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
+    const ddColor = 'var(--accent-red)';
+    html += '<div class="bt-result-row">';
+    html += '<span style="font-weight:600">' + (r.strategy_name || '--') + '</span>';
+    html += '<span>' + fmtMoney(r.initial_capital || 1000000) + '</span>';
+    html += '<span>' + fmtMoney(r.final_value) + '</span>';
+    html += '<span style="color:' + retColor + ';font-weight:600">' + fmtPct(r.total_return) + '</span>';
+    html += '<span>' + fmt(r.sharpe) + '</span>';
+    html += '<span style="color:' + ddColor + '">' + fmtPct(r.max_drawdown) + '</span>';
+    html += '<span>' + (r.total_trades || 0) + '</span>';
+    html += '</div>';
+  }
+  tbody.innerHTML = html;
+
+  renderDynamicChart(sorted);
+
+  loadDynamicDelivery(result.run_id);
+}
+
+function renderDynamicChart(strategies) {
+  const canvas = document.getElementById('dynChart');
+  if (dynChartInstance) dynChartInstance.destroy();
+
+  if (!strategies.length || !strategies[0].daily_values) {
+    canvas.style.display = 'none';
+    return;
+  }
+  canvas.style.display = 'block';
+
+  const colors = ['#00d4aa', '#4a9eff', '#ffb740', '#ff4757', '#a55eea'];
+  const datasets = strategies.map((s, i) => {
+    const values = s.daily_values || [];
+    const retPct = values.map((v, idx) => {
+      const base = values[0] || 1;
+      return ((v / base) - 1) * 100;
+    });
+    const labels = s.dates || [];
+    return {
+      label: s.strategy_name,
+      data: retPct,
+      borderColor: colors[i % colors.length],
+      backgroundColor: 'transparent',
+      tension: 0.3,
+      pointRadius: 0,
+      borderWidth: 2,
+    };
+  });
+
+  dynChartInstance = new Chart(canvas, {
+    type: 'line',
+    data: { labels: strategies[0].dates || [], datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { 
+          labels: { color: '#8b8fa3', usePointStyle: true, pointStyle: 'line', font: { size: 12 } }
+        },
+        tooltip: {
+          backgroundColor: '#1a1d29',
+          borderColor: '#2a2e3e',
+          borderWidth: 1,
+          titleColor: '#e8eaed',
+          bodyColor: '#8b8fa3',
+          callbacks: {
+            label: function(ctx) { return ctx.dataset.label + ': ' + fmtPct(ctx.parsed.y); }
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { color: 'rgba(42,46,62,0.5)', drawBorder: false },
+          ticks: { color: '#5a5e72', font: { size: 11 }, maxTicksLimit: 12 }
+        },
+        y: {
+          grid: { color: 'rgba(42,46,62,0.5)', drawBorder: false },
+          ticks: {
+            color: '#5a5e72', font: { size: 11 },
+            callback: function(v) { return v.toFixed(1) + '%'; }
+          }
+        }
+      }
+    }
+  });
+}
+
+async function loadDynamicDelivery(runId) {
+  try {
+    const data = await api('/api/backtest/' + runId + '/delivery');
+    const deliveries = data.deliveries || [];
+    
+    const tbody = document.getElementById('dynDeliveryBody');
+    let html = '';
+    for (const d of deliveries.slice(0, 100)) {
+      const actionColor = d.action === 'buy' ? 'var(--accent-green)' : 'var(--accent-red)';
+      html += '<tr style="border-bottom:1px solid var(--border)">';
+      html += '<td style="padding:8px">' + (d.trade_date || '--') + '</td>';
+      html += '<td style="padding:8px">' + (d.strategy_name || '--') + '</td>';
+      html += '<td style="padding:8px">' + (d.symbol || '--') + '</td>';
+      html += '<td style="padding:8px;color:' + actionColor + ';font-weight:600">' + (d.action === 'buy' ? '买入' : '卖出') + '</td>';
+      html += '<td style="padding:8px;text-align:right">' + fmt(d.price) + '</td>';
+      html += '<td style="padding:8px;text-align:right">' + (d.shares || 0) + '</td>';
+      html += '<td style="padding:8px;text-align:right">' + fmtMoney(d.amount) + '</td>';
+      html += '<td style="padding:8px;color:var(--text-muted)">' + (d.reason || '--') + '</td>';
+      html += '</tr>';
+    }
+    tbody.innerHTML = html || '<tr><td colspan="8" style="padding:16px;text-align:center;color:var(--text-muted)">暂无交易记录</td></tr>';
+  } catch (e) {
+    console.error('Failed to load delivery:', e);
+  }
+}
+
+function downloadDelivery() {
+  if (!dynCurrentResult) return;
+  const runId = dynCurrentResult.run_id;
+  window.open('/api/backtest/' + runId + '/delivery?format=csv', '_blank');
 }
 
 // ════════════════════════════════════════════════════════════════
