@@ -2150,7 +2150,6 @@ function switchTab(tabId) {
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + tabId));
 
   if (tabId === 'picks' && !picksInitialized) initPicksPanel();
-  if (tabId === 'backtest' && !stocksLoaded) loadStocksList();
   if (tabId === 'settings' && !settingsLoaded) loadSettingsTab();
 }
 

@@ -387,11 +387,17 @@ _init_portfolio_db()
 
 
 def _get_portfolio_conn():
-    return sqlite3.connect(str(PORTFOLIO_DB))
+    conn = sqlite3.connect(str(PORTFOLIO_DB), timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+    return conn
 
 
 def _get_db_conn():
-    return sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(DB_PATH), timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+    return conn
 
 
 def _get_cash_balance(portfolio_conn) -> float:
