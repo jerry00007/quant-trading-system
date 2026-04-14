@@ -28,8 +28,13 @@ class MAStrategy:
         self.slow_period = slow_period
         self.position = position
 
-    def calculate_signals(self, df: pd.DataFrame) -> List[Signal]:
-        """计算交易信号"""
+    def calculate_signals(self, df: pd.DataFrame, position: Optional[str] = None) -> List[Signal]:
+        """计算交易信号
+        
+        Args:
+            df: 包含OHLCV数据的DataFrame
+            position: 外部传入的持仓状态，避免状态泄漏
+        """
         signals = []
 
         if df.empty or len(df) < self.slow_period:
@@ -45,6 +50,9 @@ class MAStrategy:
             window=self.slow_period
         ).mean()
 
+        # 使用局部变量避免状态泄漏
+        current_position = position if position is not None else "sell"
+
         for i in range(self.slow_period, len(df)):
             row = df.iloc[i]
             fast_ma = row[f"ma{self.fast_period}"]
@@ -54,7 +62,7 @@ class MAStrategy:
             if pd.isna(fast_ma) or pd.isna(slow_ma):
                 continue
 
-            if fast_ma > slow_ma and self.position != "buy":
+            if fast_ma > slow_ma and current_position != "buy":
                 signals.append(Signal(
                     ts_code=row["ts_code"],
                     trade_date=row["trade_date"],
@@ -62,9 +70,9 @@ class MAStrategy:
                     price=close_price,
                     reason=f"MA{self.fast_period}上穿MA{self.slow_period}"
                 ))
-                self.position = "buy"
+                current_position = "buy"
 
-            elif fast_ma < slow_ma and self.position == "buy":
+            elif fast_ma < slow_ma and current_position == "buy":
                 signals.append(Signal(
                     ts_code=row["ts_code"],
                     trade_date=row["trade_date"],
@@ -72,7 +80,7 @@ class MAStrategy:
                     price=close_price,
                     reason=f"MA{self.fast_period}下穿MA{self.slow_period}"
                 ))
-                self.position = "sell"
+                current_position = "sell"
 
         return signals
 

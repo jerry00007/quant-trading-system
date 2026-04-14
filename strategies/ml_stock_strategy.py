@@ -8,16 +8,19 @@ warnings.filterwarnings('ignore')
 
 import numpy as np
 import pandas as pd
+import pickle
+import sqlite3
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from sklearn.ensemble import HistGradientBoostingClassifier
 
 PROJECT_ROOT = Path(__file__).parent.parent
 DB_PATH = PROJECT_ROOT / "data" / "sqlite" / "stock_data.db"
+MODEL_CACHE_DIR = PROJECT_ROOT / "data" / "ml_models"
+MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 TRAIN_WINDOW = 500
-# Holding period: model predicts 1-day direction, hold for a few days
-# to capture momentum while avoiding excessive turnover
 HOLDING_PERIOD = 5
 TOP_N = 10
 FEATURE_COLS = [
@@ -25,6 +28,64 @@ FEATURE_COLS = [
     "price_to_ma20", "ma5_to_ma20", "vol_to_vol_ma",
     "price_to_high20", "volume_ratio", "rsi_14",
 ]
+MODEL_CACHE_TTL_DAYS = 1
+
+
+class ModelCache:
+    """ML模型缓存管理器"""
+
+    def __init__(self, cache_dir: Path = MODEL_CACHE_DIR):
+        self.cache_dir = cache_dir
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._models: Dict[str, Tuple[object, datetime]] = {}
+
+    def _get_model_path(self, ts_code: str) -> Path:
+        safe_code = ts_code.replace(".", "_").replace("/", "_")
+        return self.cache_dir / f"model_{safe_code}.pkl"
+
+    def get(self, ts_code: str) -> Optional[object]:
+        if ts_code in self._models:
+            model, cached_time = self._models[ts_code]
+            if (datetime.now() - cached_time).days < MODEL_CACHE_TTL_DAYS:
+                return model
+
+        model_path = self._get_model_path(ts_code)
+        if model_path.exists():
+            try:
+                mtime = datetime.fromtimestamp(model_path.stat().st_mtime)
+                if (datetime.now() - mtime).days < MODEL_CACHE_TTL_DAYS:
+                    with open(model_path, "rb") as f:
+                        model = pickle.load(f)
+                    self._models[ts_code] = (model, datetime.now())
+                    return model
+            except Exception:
+                pass
+        return None
+
+    def put(self, ts_code: str, model: object):
+        model_path = self._get_model_path(ts_code)
+        try:
+            with open(model_path, "wb") as f:
+                pickle.dump(model, f)
+            self._models[ts_code] = (model, datetime.now())
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to cache model for {ts_code}: {e}")
+
+    def clear(self):
+        self._models.clear()
+        for f in self.cache_dir.glob("model_*.pkl"):
+            f.unlink()
+
+
+_model_cache: Optional[ModelCache] = None
+
+
+def get_model_cache() -> ModelCache:
+    global _model_cache
+    if _model_cache is None:
+        _model_cache = ModelCache()
+    return _model_cache
 
 
 def compute_features(df: pd.DataFrame, lookback: int = 20) -> pd.DataFrame:
@@ -144,7 +205,7 @@ def train_and_predict(df_features: pd.DataFrame, as_of_idx: int,
     }
 
 
-def generate_daily_stock_picks(conn, as_of_date: str = None, top_n: int = TOP_N) -> List[dict]:
+def generate_daily_stock_picks(conn, as_of_date: str = None, top_n: int = TOP_N, use_cache: bool = True) -> List[dict]:
     import sqlite3
 
     stocks = [r[0] for r in conn.execute(
@@ -158,6 +219,7 @@ def generate_daily_stock_picks(conn, as_of_date: str = None, top_n: int = TOP_N)
         return []
 
     picks = []
+    model_cache = get_model_cache() if use_cache else None
 
     for ts_code in stocks:
         df = pd.read_sql(
@@ -171,7 +233,44 @@ def generate_daily_stock_picks(conn, as_of_date: str = None, top_n: int = TOP_N)
         features = compute_features(df)
 
         last_idx = len(features) - 1
-        result = train_and_predict(features, last_idx)
+
+        if model_cache:
+            cached_model = model_cache.get(ts_code)
+            if cached_model is not None:
+                current_row = features.iloc[last_idx]
+                X_current = current_row[FEATURE_COLS].values.reshape(1, -1)
+                try:
+                    pred = cached_model.predict(X_current)[0]
+                    proba = cached_model.predict_proba(X_current)[0]
+                    result = {
+                        "prediction": int(pred),
+                        "prob_up": round(float(proba[1] if len(proba) > 1 else proba[0]), 4),
+                        "date": str(current_row["trade_date"]),
+                        "close": float(current_row["close"]),
+                        "features_snapshot": {col: round(float(current_row[col]), 4) for col in FEATURE_COLS},
+                        "cached": True,
+                    }
+                except Exception:
+                    result = None
+            else:
+                result = train_and_predict(features, last_idx)
+                if result:
+                    train_data = features.iloc[max(0, last_idx - TRAIN_WINDOW):last_idx]
+                    X_train = train_data[FEATURE_COLS].values
+                    y_train = train_data["label"].values
+                    if len(np.unique(y_train)) >= 2:
+                        model = HistGradientBoostingClassifier(
+                            max_iter=100, max_depth=4, learning_rate=0.1,
+                            min_samples_leaf=20, random_state=42,
+                        )
+                        try:
+                            model.fit(X_train, y_train)
+                            model_cache.put(ts_code, model)
+                        except Exception:
+                            pass
+        else:
+            result = train_and_predict(features, last_idx)
+
         if result is None:
             continue
 
