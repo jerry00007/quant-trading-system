@@ -577,20 +577,48 @@ tbody tr:last-child td { border-bottom: none; }
 }
 
 /* ── Strategy Picks ──────────────────────────────────────────── */
+.picks-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .strategy-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
+  border-left: 3px solid var(--card-accent, #06b6d4);
   border-radius: var(--radius);
-  padding: 20px;
-  margin-bottom: 16px;
+  padding: 16px 20px;
+  position: relative;
+  transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+  animation: cardSlideIn 0.35s ease backwards;
 }
+.strategy-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 24px -4px var(--card-accent-alpha, rgba(6,182,212,0.15)),
+              0 0 0 1px rgba(255,255,255,0.03);
+  border-color: rgba(255,255,255,0.08);
+  border-left-color: var(--card-accent, #06b6d4);
+}
+
+@keyframes cardSlideIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .strategy-card-header {
   display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 16px; flex-wrap: wrap; gap: 8px;
+  margin-bottom: 10px; flex-wrap: wrap; gap: 8px;
 }
 .strategy-card-title {
-  font-size: 1rem; font-weight: 700; color: var(--text-primary);
+  font-size: 0.92rem; font-weight: 700; color: var(--text-primary);
   display: flex; align-items: center; gap: 8px;
+  letter-spacing: 0.2px;
+}
+.strategy-card-title .accent-dot {
+  width: 7px; height: 7px; border-radius: 2px;
+  display: inline-block;
+  box-shadow: 0 0 6px var(--card-accent, #06b6d4);
 }
 .strategy-card-desc {
   font-size: 0.8rem; color: var(--text-muted); font-weight: 400;
@@ -607,24 +635,40 @@ tbody tr:last-child td { border-bottom: none; }
 
 .pick-item {
   display: grid; grid-template-columns: auto 1fr auto auto auto;
-  gap: 12px; align-items: center;
-  padding: 10px 14px; border-radius: var(--radius-sm);
-  border-bottom: 1px solid var(--border);
-  transition: background var(--transition);
+  gap: 10px; align-items: center;
+  padding: 7px 10px; border-radius: var(--radius-sm);
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+  transition: background 0.15s ease;
+  font-size: 0.84rem;
 }
-.pick-item:hover { background: rgba(255,255,255,0.02); }
+.pick-item:hover { background: rgba(255,255,255,0.025); }
 .pick-item:last-child { border-bottom: none; }
 .pick-rank {
-  width: 28px; height: 28px; border-radius: 6px;
+  width: 26px; height: 26px; border-radius: 5px;
   display: flex; align-items: center; justify-content: center;
-  font-weight: 700; font-size: 0.82rem;
+  font-weight: 700; font-size: 0.78rem;
   background: var(--bg-input); color: var(--text-muted);
 }
-.pick-rank.top-k { background: var(--accent-green-dim); color: var(--accent-green); }
-.pick-name { font-weight: 600; color: var(--text-primary); }
-.pick-symbol { font-size: 0.75rem; color: var(--text-muted); margin-left: 6px; }
-.pick-momentum { font-weight: 600; font-variant-numeric: tabular-nums; }
-.pick-price { color: var(--accent-yellow); font-weight: 500; font-variant-numeric: tabular-nums; }
+.pick-rank.top-k {
+  background: var(--accent-green-dim); color: var(--accent-green);
+  box-shadow: 0 0 8px rgba(34,197,94,0.15);
+}
+.pick-name { font-weight: 600; color: var(--text-primary); font-size: 0.84rem; }
+.pick-symbol {
+  font-size: 0.7rem; color: var(--text-muted); margin-left: 5px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  letter-spacing: -0.2px;
+}
+.pick-momentum {
+  font-weight: 600; font-variant-numeric: tabular-nums;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 0.8rem;
+}
+.pick-price {
+  color: var(--accent-yellow); font-weight: 500; font-variant-numeric: tabular-nums;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 0.82rem;
+}
 @media (max-width: 768px) {
   .pick-item { grid-template-columns: auto 1fr auto; }
   .pick-momentum, .pick-price { display: none; }
@@ -651,6 +695,113 @@ tbody tr:last-child td { border-bottom: none; }
   display: flex; justify-content: space-between; align-items: center;
 }
 .signal-list-item:hover { background: rgba(255,255,255,0.03); }
+
+.strategy-card-refresh {
+  background: none; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--text-muted); cursor: pointer; font-size: 0.78rem; padding: 3px 8px;
+  transition: all var(--transition);
+}
+.strategy-card-refresh:hover { border-color: var(--accent-blue); color: var(--accent-blue); }
+.strategy-card-refresh.loading { animation: spin 1s linear infinite; }
+.strategy-card-error {
+  background: var(--accent-red-dim); border: 1px solid rgba(239,68,68,0.2);
+  border-radius: var(--radius-sm); padding: 12px 16px; margin-top: 8px;
+  font-size: 0.82rem; color: var(--accent-red);
+}
+.strategy-card-loading {
+  display: flex; align-items: center; justify-content: center;
+  padding: 28px; color: var(--text-muted); font-size: 0.82rem; gap: 8px;
+}
+.chip-info {
+  font-size: 0.75rem; color: var(--text-muted); margin-top: 2px;
+  display: flex; gap: 8px; flex-wrap: wrap;
+}
+.chip-info span {
+  background: var(--bg-input); padding: 1px 6px; border-radius: 3px;
+}
+.mf-score-bar {
+  height: 4px; border-radius: 2px; background: var(--bg-input);
+  margin-top: 4px; overflow: hidden;
+}
+.mf-score-bar-fill {
+  height: 100%; border-radius: 2px; transition: width 0.3s;
+}
+/* ── Buy Modal ────────────────────────────────────────────────── */
+.buy-modal-overlay {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 1000;
+  animation: fadeSlideIn 0.2s ease;
+}
+.buy-modal {
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 24px;
+  min-width: 360px;
+  max-width: 440px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+}
+.buy-modal-title {
+  font-size: 1rem; font-weight: 700; color: var(--text-primary);
+  margin-bottom: 18px; display: flex; align-items: center; gap: 8px;
+}
+.buy-modal-row {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 12px;
+}
+.buy-modal-label {
+  font-size: 0.82rem; color: var(--text-muted); min-width: 70px; flex-shrink: 0;
+}
+.buy-modal-row .input {
+  flex: 1;
+}
+/* ── Sell Signal Highlight ────────────────────────────────────── */
+.holding-sell-warning {
+  background: rgba(255,71,87,0.08) !important;
+  border-left: 3px solid var(--accent-red);
+}
+.sell-signal-text {
+  background: var(--accent-red-dim);
+  border: 1px solid rgba(255,71,87,0.2);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  margin-top: 4px;
+  font-size: 0.78rem;
+  color: var(--accent-red);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* ── Stock Signals ────────────────────────────────────────────── */
+.stock-signals-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.stock-signal-card {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px;
+  transition: all var(--transition);
+}
+.stock-signal-card:hover { border-color: var(--border-light); }
+.stock-signal-card-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+.stock-signal-symbol { font-weight: 700; font-size: 0.95rem; color: var(--text-primary); }
+.stock-signal-name { font-size: 0.82rem; color: var(--text-secondary); margin-left: 8px; }
+.stock-signal-reason { font-size: 0.78rem; color: var(--text-muted); margin-top: 4px; }
+.stock-signal-strategy { font-size: 0.72rem; color: var(--text-muted); margin-top: 4px; }
+.etf-toggle-wrap {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
 
 /* ── Backtest ─────────────────────────────────────────────────── */
 .bt-controls {
@@ -774,7 +925,7 @@ tbody tr:last-child td { border-bottom: none; }
       <button class="btn" id="btnUpdateData" onclick="updateMarketData()">
         <span>↻</span> 更新数据
       </button>
-      <button class="btn" id="btnRefresh" onclick="loadDashboard()">
+      <button class="btn" id="btnRefresh" onclick="loadDashboard(true)">
         <span>⟳</span> 刷新
       </button>
     </div>
@@ -786,8 +937,7 @@ tbody tr:last-child td { border-bottom: none; }
   <div class="container" style="display:flex;gap:0;padding:0">
     <button class="tab-btn active" data-tab="dashboard" onclick="switchTab('dashboard')">交易面板</button>
     <button class="tab-btn" data-tab="picks" onclick="switchTab('picks')">策略选股</button>
-    <button class="tab-btn" data-tab="backtest" onclick="switchTab('backtest')">回测对比</button>
-    <button class="tab-btn" data-tab="dynamic-backtest" onclick="switchTab('dynamic-backtest')">🚀 动态回测</button>
+  <button class="tab-btn" data-tab="backtest" onclick="switchTab('backtest')">回测</button>
     <button class="tab-btn" data-tab="settings" onclick="switchTab('settings')">⚙ 设置</button>
   </div>
 </nav>
@@ -994,70 +1144,17 @@ tbody tr:last-child td { border-bottom: none; }
       <span style="font-size:1.05rem;font-weight:700">策略选股</span>
       <span id="picksDate" style="font-size:0.82rem;color:var(--text-muted);margin-left:12px"></span>
     </div>
-    <button class="btn btn-primary btn-sm" onclick="loadStrategyPicks(true)">⟳ 刷新</button>
+    <button class="btn btn-primary btn-sm" onclick="refreshAllPicks()">⟳ 全部刷新</button>
   </div>
   <div id="picksContent">
-    <div class="loading-overlay"><span class="loading-spinner"></span> 加载策略选股数据...</div>
+    <!-- cards rendered by JS -->
   </div>
 </div>
 
-<!-- Tab Panel: Backtest Comparison -->
+<!-- Tab Panel: Backtest -->
 <div class="tab-panel" id="tab-backtest">
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
-    <span style="font-size:1.05rem;font-weight:700">回测对比</span>
-  </div>
-
-  <div class="section" style="margin-bottom:16px">
-    <div class="section-title"><span class="icon">⚙️</span> 参数设置</div>
-    <div class="bt-controls">
-      <div class="form-group">
-        <label style="font-size:0.76rem;color:var(--text-muted);font-weight:500;display:block;margin-bottom:4px">选择股票</label>
-        <div class="bt-multiselect-wrap">
-          <div class="bt-multiselect" id="btStockSelect" tabindex="0" onclick="event.stopPropagation();toggleStockDropdown()">
-            <span class="bt-placeholder">搜索并选择股票...</span>
-          </div>
-          <div class="bt-dropdown" id="btStockDropdown">
-            <input class="bt-dropdown-search" id="btStockSearch" placeholder="搜索代码或名称..." oninput="filterStockList()">
-            <div id="btStockList"></div>
-          </div>
-        </div>
-      </div>
-      <div class="form-group">
-        <label style="font-size:0.76rem;color:var(--text-muted);font-weight:500;display:block;margin-bottom:4px">起始日期</label>
-        <input type="date" class="input input-sm" id="btStartDate" value="2023-01-01">
-      </div>
-      <div class="form-group">
-        <label style="font-size:0.76rem;color:var(--text-muted);font-weight:500;display:block;margin-bottom:4px">&nbsp;</label>
-        <button class="btn btn-primary" id="btnRunCompare" onclick="runBacktestCompare()">
-          <span>▶</span> 运行对比
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <div id="btResultsWrap" style="display:none">
-    <div class="section" style="margin-bottom:16px">
-      <div class="section-title"><span class="icon">📊</span> 对比结果</div>
-      <div class="bt-result-row bt-result-header">
-        <span>策略</span><span>股票</span><span>收益率</span><span>夏普率</span><span>最大回撤</span><span>胜率</span>
-      </div>
-      <div id="btResultsBody"></div>
-    </div>
-
-    <div class="section">
-      <div class="section-title"><span class="icon">📈</span> 收益曲线</div>
-      <div class="bt-chart-selector" id="btChartSelector"></div>
-      <div class="chart-container">
-        <canvas id="btChart"></canvas>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- Tab Panel: Dynamic Backtest -->
-<div class="tab-panel" id="tab-dynamic-backtest">
-  <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
-    <span style="font-size:1.05rem;font-weight:700">🚀 动态多策略回测</span>
+    <span style="font-size:1.05rem;font-weight:700">多策略回测</span>
     <span style="font-size:0.75rem;color:var(--text-muted)">每日扫描全市场选股，自动调仓</span>
   </div>
 
@@ -1081,6 +1178,27 @@ tbody tr:last-child td { border-bottom: none; }
           </label>
           <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:0.82rem">
             <input type="checkbox" value="etf_rotation" class="dyn-strategy-check"> ETF轮动
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:0.82rem">
+            <input type="checkbox" value="vol_breakout" class="dyn-strategy-check"> 量价突破
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:0.82rem">
+            <input type="checkbox" value="dragon_first_yin" class="dyn-strategy-check"> 龙回头
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:0.82rem">
+            <input type="checkbox" value="trend_ma" class="dyn-strategy-check"> 趋势均线
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:0.82rem">
+            <input type="checkbox" value="top_bottom" class="dyn-strategy-check"> 顶底图
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:0.82rem">
+            <input type="checkbox" value="bollinger_break" class="dyn-strategy-check"> 布林突破
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:0.82rem">
+            <input type="checkbox" value="rsi_momentum" class="dyn-strategy-check"> RSI动量
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:0.82rem">
+            <input type="checkbox" value="macd_cross" class="dyn-strategy-check"> MACD交叉
           </label>
         </div>
       </div>
@@ -1264,11 +1382,39 @@ tbody tr:last-child td { border-bottom: none; }
   <div class="container">量化交易系统 v1.0 · 数据仅供参考，不构成投资建议</div>
 </footer>
 
+<!-- Buy Modal -->
+<div class="buy-modal-overlay" id="buyModalOverlay" style="display:none" onclick="if(event.target===this)closeBuyModal()">
+  <div class="buy-modal">
+    <div class="buy-modal-title"><span style="color:var(--accent-green)">◆</span> 买入确认</div>
+    <div class="buy-modal-row">
+      <span class="buy-modal-label">股票代码</span>
+      <input type="text" class="input input-sm" id="buyModalSymbol" readonly style="background:var(--bg-input)">
+    </div>
+    <div class="buy-modal-row">
+      <span class="buy-modal-label">股票名称</span>
+      <input type="text" class="input input-sm" id="buyModalName" readonly style="background:var(--bg-input)">
+    </div>
+    <div class="buy-modal-row">
+      <span class="buy-modal-label">当前价格</span>
+      <input type="number" class="input input-sm" id="buyModalPrice" step="0.001">
+    </div>
+    <div class="buy-modal-row">
+      <span class="buy-modal-label">买入数量</span>
+      <input type="number" class="input input-sm" id="buyModalShares" placeholder="100" min="1">
+    </div>
+    <div style="display:flex;gap:8px;margin-top:18px;justify-content:flex-end">
+      <button class="btn btn-sm" onclick="closeBuyModal()">取消</button>
+      <button class="btn btn-primary btn-sm" id="buyModalSubmitBtn" onclick="submitBuyModal()">确认买入</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ════════════════════════════════════════════════════════════════
 // State
 // ════════════════════════════════════════════════════════════════
 let dashboardData = null;
+let sellSignals = [];
 let performanceChart = null;
 let allocationChart = null;
 let refreshTimer = null;
@@ -1342,16 +1488,17 @@ function todayStr() {
 // ════════════════════════════════════════════════════════════════
 // Dashboard Load
 // ════════════════════════════════════════════════════════════════
-async function loadDashboard() {
+async function loadDashboard(forceRefresh) {
   const btn = document.getElementById('btnRefresh');
   btn.disabled = true;
   btn.innerHTML = '<span class="loading-spinner" style="width:14px;height:14px;border-width:2px"></span> 刷新中';
 
   try {
-    const data = await api('/api/dashboard');
+    const refreshParam = forceRefresh ? '?refresh=true' : '';
+    const data = await api('/api/dashboard' + refreshParam);
     dashboardData = data;
     renderMetrics(data.portfolio);
-    renderSignals(data.pending_signals, data.fresh_signals);
+    renderSignals(data.pending_signals, data.fresh_signals, data.stock_signals);
     renderHoldings(data.portfolio.holdings, data.portfolio.allocation);
     renderAllocation(data.portfolio.allocation);
     document.getElementById('dataDate').textContent = '数据日期: ' + (data.portfolio.data_date || '--');
@@ -1364,11 +1511,26 @@ async function loadDashboard() {
     loadPerformance();
     loadEtfPrices();
     loadHistory();
+    loadSellSignals(forceRefresh);
   } catch (e) {
     console.error('Dashboard load failed:', e);
   } finally {
     btn.disabled = false;
     btn.innerHTML = '<span>⟳</span> 刷新';
+  }
+}
+
+async function loadSellSignals(forceRefresh) {
+  try {
+    const refreshParam = forceRefresh ? '?refresh=true' : '';
+    const data = await api('/api/holdings/sell-signals' + refreshParam);
+    sellSignals = data.signals || [];
+    if (sellSignals.length > 0 && dashboardData && dashboardData.portfolio) {
+      renderHoldings(dashboardData.portfolio.holdings, dashboardData.portfolio.allocation);
+    }
+  } catch (e) {
+    console.error('Sell signals load failed:', e);
+    sellSignals = [];
   }
 }
 
@@ -1398,26 +1560,24 @@ function renderMetrics(p) {
 // ════════════════════════════════════════════════════════════════
 // Render: Signals
 // ════════════════════════════════════════════════════════════════
-function renderSignals(pending, fresh) {
+function renderSignals(pending, fresh, stockSignals) {
   const container = document.getElementById('signalsContent');
   const section = document.getElementById('signalsSection');
   const badge = document.getElementById('signalsCount');
 
-  // Combine: pending from DB + fresh generated
   const allSignals = [...(pending || []), ...(fresh || [])];
-
-  // De-duplicate by symbol+action (prefer DB pending over fresh)
   const seen = new Set();
   const unique = [];
   for (const s of allSignals) {
     const key = s.symbol + '_' + s.action;
-    if (!seen.has(key)) {
-      seen.add(key);
-      unique.push(s);
-    }
+    if (!seen.has(key)) { seen.add(key); unique.push(s); }
   }
 
-  if (unique.length === 0) {
+  const hasStockSignals = stockSignals && stockSignals.length > 0;
+  const hasEtfSignals = unique.length > 0;
+  const totalCount = (stockSignals ? stockSignals.length : 0) + unique.length;
+
+  if (totalCount === 0) {
     section.classList.remove('has-signals');
     badge.style.display = 'none';
     container.innerHTML = '<div class="empty-state"><div class="empty-icon">✅</div><p>暂无待执行信号</p><div class="hint">点击「生成今日信号」获取最新操作建议</div></div>';
@@ -1426,55 +1586,100 @@ function renderSignals(pending, fresh) {
 
   section.classList.add('has-signals');
   badge.style.display = 'inline-block';
-  badge.textContent = unique.length;
+  badge.textContent = totalCount;
 
   let html = '';
-  for (const s of unique) {
-    const isBuy = s.action === 'buy';
-    const actionLabel = isBuy ? '买入' : '卖出';
-    const actionClass = isBuy ? 'signal-action-buy' : 'signal-action-sell';
-    const hasId = s.id != null;
 
-    html += '<div class="signal-item" data-signal-id="' + (s.id || '') + '">';
-    html += '  <div class="signal-info">';
-    html += '    <span class="signal-action-badge ' + actionClass + '">' + actionLabel + '</span>';
-    html += '    <span class="signal-symbol">' + s.symbol + '</span>';
-    html += '    <span class="signal-name">' + (s.name || '') + '</span>';
-    html += '    <span class="signal-price">¥' + (s.reference_price || '--') + '</span>';
-    html += '    <span class="signal-reason">' + (s.reason || '') + '</span>';
-    html += '  </div>';
-    html += '  <div class="signal-meta">';
-    html += '    <span>执行日: ' + (s.execute_date || '--') + '</span>';
-    html += '    <span>策略: ' + (s.strategy || '') + '</span>';
-    if (s.shares > 0) html += '    <span>数量: ' + s.shares + '</span>';
-    html += '  </div>';
-    html += '  <div class="signal-actions">';
-    if (hasId) {
-      html += '    <button class="btn btn-primary btn-sm" onclick="toggleConfirmForm(' + s.id + ', \'' + s.action + '\', ' + s.reference_price + ', ' + s.shares + ')">确认执行</button>';
-      html += '    <button class="btn btn-danger btn-sm" onclick="skipSignal(' + s.id + ')">跳过</button>';
-    } else {
-      html += '    <span style="font-size:0.78rem;color:var(--text-muted)">待保存至数据库</span>';
-    }
-    html += '  </div>';
-    html += '</div>';
-
-    // Confirm form (hidden)
-    if (hasId) {
-      html += '<div class="confirm-form" id="confirmForm_' + s.id + '">';
-      html += '  <div class="confirm-row">';
-      html += '    <span class="confirm-label">实际价格</span>';
-      html += '    <input type="number" class="input input-sm" style="width:120px" id="confirmPrice_' + s.id + '" value="' + (s.reference_price || '') + '" step="0.001">';
-      html += '    <span class="confirm-label" style="margin-left:10px">实际数量</span>';
-      html += '    <input type="number" class="input input-sm" style="width:120px" id="confirmShares_' + s.id + '" value="' + (s.shares || 0) + '" min="0">';
-      html += '  </div>';
-      html += '  <div class="confirm-row">';
-      html += '    <button class="btn btn-primary btn-sm" id="confirmBtn_' + s.id + '" onclick="confirmSignal(' + s.id + ', \'' + s.action + '\')">提交确认</button>';
-      html += '    <button class="btn btn-sm" onclick="toggleConfirmForm(' + s.id + ')">取消</button>';
-      html += '  </div>';
+  if (hasStockSignals) {
+    html += '<div style="margin-bottom:16px">';
+    html += '<div style="font-size:0.92rem;font-weight:700;color:var(--text-primary);margin-bottom:12px;display:flex;align-items:center;gap:8px">📈 股票信号 <span style="font-size:0.72rem;font-weight:600;background:var(--accent-green);color:#0f1117;padding:2px 8px;border-radius:10px">' + stockSignals.length + '</span></div>';
+    html += '<div class="stock-signals-grid">';
+    for (const s of stockSignals) {
+      const isBuy = s.action === 'buy';
+      const actionLabel = isBuy ? '买入' : '卖出';
+      const actionClass = isBuy ? 'signal-action-buy' : 'signal-action-sell';
+      const borderColor = isBuy ? 'rgba(0,212,170,0.3)' : 'rgba(255,71,87,0.3)';
+      html += '<div class="stock-signal-card" style="border-color:' + borderColor + '">';
+      html += '<div class="stock-signal-card-header">';
+      html += '<div><span class="stock-signal-symbol">' + (s.symbol || '') + '</span><span class="stock-signal-name">' + (s.name || '') + '</span></div>';
+      html += '<span class="signal-action-badge ' + actionClass + '">' + actionLabel + '</span>';
+      html += '</div>';
+      if (s.reason) html += '<div class="stock-signal-reason">' + s.reason + '</div>';
+      if (s.strategy) html += '<div class="stock-signal-strategy">策略: ' + s.strategy + '</div>';
       html += '</div>';
     }
+    html += '</div>';
+    html += '</div>';
+  } else {
+    html += '<div style="margin-bottom:16px">';
+    html += '<div style="font-size:0.92rem;font-weight:700;color:var(--text-primary);margin-bottom:12px;display:flex;align-items:center;gap:8px">📈 股票信号</div>';
+    html += '<div style="font-size:0.85rem;color:var(--text-muted);padding:12px 0">暂无股票信号</div>';
+    html += '</div>';
   }
+
+  if (hasEtfSignals) {
+    html += '<div class="etf-toggle-wrap">';
+    html += '<div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;margin-bottom:' + (hasEtfSignals ? '12' : '0') + 'px" onclick="toggleEtfSignals()">';
+    html += '<span style="font-size:0.88rem;font-weight:600;color:var(--text-secondary)">📊 ETF/其他信号 <span style="font-size:0.72rem;font-weight:400;color:var(--text-muted)">(' + unique.length + ')</span></span>';
+    html += '<span id="etfToggleIcon" style="font-size:0.78rem;color:var(--text-muted);transition:transform 0.2s">▶</span>';
+    html += '</div>';
+    html += '<div id="etfSignalsContent" style="display:none">';
+    for (const s of unique) {
+      const isBuy = s.action === 'buy';
+      const actionLabel = isBuy ? '买入' : '卖出';
+      const actionClass = isBuy ? 'signal-action-buy' : 'signal-action-sell';
+      const hasId = s.id != null;
+      html += '<div class="signal-item" data-signal-id="' + (s.id || '') + '">';
+      html += '  <div class="signal-info">';
+      html += '    <span class="signal-action-badge ' + actionClass + '">' + actionLabel + '</span>';
+      html += '    <span class="signal-symbol">' + s.symbol + '</span>';
+      html += '    <span class="signal-name">' + (s.name || '') + '</span>';
+      html += '    <span class="signal-price">¥' + (s.reference_price || '--') + '</span>';
+      html += '    <span class="signal-reason">' + (s.reason || '') + '</span>';
+      html += '  </div>';
+      html += '  <div class="signal-meta">';
+      html += '    <span>执行日: ' + (s.execute_date || '--') + '</span>';
+      html += '    <span>策略: ' + (s.strategy || '') + '</span>';
+      if (s.shares > 0) html += '    <span>数量: ' + s.shares + '</span>';
+      html += '  </div>';
+      html += '  <div class="signal-actions">';
+      if (hasId) {
+        html += '    <button class="btn btn-primary btn-sm" onclick="toggleConfirmForm(' + s.id + ', \'' + s.action + '\', ' + s.reference_price + ', ' + s.shares + ')">确认执行</button>';
+        html += '    <button class="btn btn-danger btn-sm" onclick="skipSignal(' + s.id + ')">跳过</button>';
+      } else {
+        html += '    <span style="font-size:0.78rem;color:var(--text-muted)">待保存至数据库</span>';
+      }
+      html += '  </div>';
+      html += '</div>';
+      if (hasId) {
+        html += '<div class="confirm-form" id="confirmForm_' + s.id + '">';
+        html += '  <div class="confirm-row">';
+        html += '    <span class="confirm-label">实际价格</span>';
+        html += '    <input type="number" class="input input-sm" style="width:120px" id="confirmPrice_' + s.id + '" value="' + (s.reference_price || '') + '" step="0.001">';
+        html += '    <span class="confirm-label" style="margin-left:10px">实际数量</span>';
+        html += '    <input type="number" class="input input-sm" style="width:120px" id="confirmShares_' + s.id + '" value="' + (s.shares || 0) + '" min="0">';
+        html += '  </div>';
+        html += '  <div class="confirm-row">';
+        html += '    <button class="btn btn-primary btn-sm" id="confirmBtn_' + s.id + '" onclick="confirmSignal(' + s.id + ', \'' + s.action + '\')">提交确认</button>';
+        html += '    <button class="btn btn-sm" onclick="toggleConfirmForm(' + s.id + ')">取消</button>';
+        html += '  </div>';
+        html += '</div>';
+      }
+    }
+    html += '</div>';
+    html += '</div>';
+  }
+
   container.innerHTML = html;
+}
+
+function toggleEtfSignals() {
+  const content = document.getElementById('etfSignalsContent');
+  const icon = document.getElementById('etfToggleIcon');
+  if (!content) return;
+  const isHidden = content.style.display === 'none';
+  content.style.display = isHidden ? 'block' : 'none';
+  if (icon) icon.style.transform = isHidden ? 'rotate(90deg)' : 'rotate(0deg)';
 }
 
 function toggleConfirmForm(signalId, action, refPrice, shares) {
@@ -1559,7 +1764,9 @@ function renderHoldings(holdings, allocation) {
   for (const h of holdings) {
     const rowClass = fmtRowClass(h.pnl_pct);
     const pnlClass = fmtPnlClass(h.pnl_pct);
-    html += '<tr class="' + rowClass + '" style="cursor:pointer" onclick="toggleHoldingDetail(\'' + h.symbol + '\')">';
+    const sellSignal = sellSignals.find(s => s.symbol === h.symbol && (!s.strategy || s.strategy === h.strategy));
+    const sellClass = sellSignal ? ' holding-sell-warning' : '';
+    html += '<tr class="' + rowClass + sellClass + '" style="cursor:pointer" onclick="toggleHoldingDetail(\'' + h.symbol + '\')">';
     html += '<td>' + h.symbol + '</td>';
     html += '<td>' + (h.name || '--') + '</td>';
     html += '<td>' + h.shares.toLocaleString() + '</td>';
@@ -1578,7 +1785,11 @@ function renderHoldings(holdings, allocation) {
     html += '<div class="holding-detail-item"><label>现价</label><span>¥' + h.current_price.toFixed(4) + '</span></div>';
     html += '<div class="holding-detail-item"><label>盈亏金额</label><span class="' + pnlClass + '">¥' + fmt((h.current_price - h.entry_price) * h.shares) + '</span></div>';
     html += '<div class="holding-detail-item"><label>盈亏比例</label><span class="' + pnlClass + '">' + fmtPct(h.pnl_pct) + '</span></div>';
-    html += '</div></div></td></tr>';
+    html += '</div>';
+    if (sellSignal) {
+      html += '<div class="sell-signal-text">⚠️ 卖出建议: ' + (sellSignal.reason || '策略触发卖出信号') + (sellSignal.signal_type ? ' [' + sellSignal.signal_type + ']' : '') + (sellSignal.current_price ? ' | 现价: ¥' + parseFloat(sellSignal.current_price).toFixed(2) : '') + '</div>';
+    }
+    html += '</div></td></tr>';
   }
   tbody.innerHTML = html;
 }
@@ -1856,6 +2067,51 @@ async function submitManualTrade() {
 }
 
 // ════════════════════════════════════════════════════════════════
+// Buy Modal (Strategy Picks)
+// ════════════════════════════════════════════════════════════════
+let buyModalStrategy = '';
+
+function openBuyModal(symbol, name, price, strategy) {
+  buyModalStrategy = strategy;
+  document.getElementById('buyModalSymbol').value = symbol;
+  document.getElementById('buyModalName').value = name;
+  document.getElementById('buyModalPrice').value = price || '';
+  document.getElementById('buyModalShares').value = '';
+  document.getElementById('buyModalOverlay').style.display = 'flex';
+}
+
+function closeBuyModal() {
+  document.getElementById('buyModalOverlay').style.display = 'none';
+  buyModalStrategy = '';
+}
+
+async function submitBuyModal() {
+  const symbol = document.getElementById('buyModalSymbol').value.trim();
+  const name = document.getElementById('buyModalName').value.trim();
+  const price = parseFloat(document.getElementById('buyModalPrice').value);
+  const shares = parseInt(document.getElementById('buyModalShares').value);
+  if (!price || price <= 0) { showToast('请输入有效价格', 'error'); return; }
+  if (!shares || shares <= 0) { showToast('请输入有效数量', 'error'); return; }
+  const btn = document.getElementById('buyModalSubmitBtn');
+  btn.disabled = true;
+  btn.textContent = '提交中...';
+  try {
+    await api('/api/strategies/picks/buy', {
+      method: 'POST',
+      body: JSON.stringify({ symbol, name, price, shares, strategy: buyModalStrategy })
+    });
+    showToast('买入成功', 'success');
+    closeBuyModal();
+    loadDashboard();
+  } catch (e) {
+    showToast('买入失败: ' + (e.message || '未知错误'), 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '确认买入';
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
 // Update Market Data
 // ════════════════════════════════════════════════════════════════
 async function updateMarketData() {
@@ -1893,7 +2149,7 @@ function switchTab(tabId) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tabId));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + tabId));
 
-  if (tabId === 'picks' && !picksLoaded) loadStrategyPicks();
+  if (tabId === 'picks' && !picksInitialized) initPicksPanel();
   if (tabId === 'backtest' && !stocksLoaded) loadStocksList();
   if (tabId === 'settings' && !settingsLoaded) loadSettingsTab();
 }
@@ -2107,373 +2363,282 @@ async function updateEtfData() {
 // ════════════════════════════════════════════════════════════════
 // Strategy Picks
 // ════════════════════════════════════════════════════════════════
-let picksLoaded = false;
+let picksInitialized = false;
 
-async function loadStrategyPicks(forceRefresh = false) {
-  const container = document.getElementById('picksContent');
-  container.innerHTML = '<div class="loading-overlay"><span class="loading-spinner"></span> 加载策略选股数据...</div>';
+const STRATEGY_ORDER = [
+  'trend_ma','chip','ml','rsi_momentum','macd_cross','multifactor',
+  'etf','top_bottom','bollinger_break','dragon_first_yin','vol_breakout'
+];
 
-  let html = '';
-  let dateStr = '';
-  const refreshParam = forceRefresh ? '&refresh=true' : '';
+const STRATEGY_CARDS = {
+  trend_ma:       { id: 'trend_ma', title: '趋势均线策略', color: '#06b6d4', apiType: 'new', apiUrl: '/api/strategies/trend_ma/picks' },
+  chip:           { id: 'chip', title: '筹码策略', color: '#a78bfa', apiType: 'legacy', apiField: 'enhanced_chip' },
+  ml:             { id: 'ml', title: 'ML选股', color: '#4a9eff', apiType: 'legacy', apiField: 'ml_stock' },
+  rsi_momentum:   { id: 'rsi_momentum', title: 'RSI动量策略', color: '#eab308', apiType: 'new', apiUrl: '/api/strategies/rsi_momentum/picks' },
+  macd_cross:     { id: 'macd_cross', title: 'MACD交叉策略', color: '#22c55e', apiType: 'new', apiUrl: '/api/strategies/macd_cross/picks' },
+  multifactor:    { id: 'multifactor', title: '多因子选股', color: '#ffb740', apiType: 'legacy', apiField: 'multifactor' },
+  etf:            { id: 'etf', title: 'ETF轮动策略', color: '#00d4aa', apiType: 'legacy', apiField: 'etf_rotation' },
+  top_bottom:     { id: 'top_bottom', title: '顶底图策略', color: '#f97316', apiType: 'new', apiUrl: '/api/strategies/top_bottom/picks' },
+  bollinger_break:{ id: 'bollinger_break', title: '布林突破策略', color: '#8b5cf6', apiType: 'new', apiUrl: '/api/strategies/bollinger_break/picks' },
+  dragon_first_yin:{ id: 'dragon_first_yin', title: '龙回头策略', color: '#ec4899', apiType: 'new', apiUrl: '/api/strategies/dragon_first_yin/picks' },
+  vol_breakout:   { id: 'vol_breakout', title: '量价突破策略', color: '#ef4444', apiType: 'new', apiUrl: '/api/strategies/vol_breakout/picks' },
+};
 
-  // Load ETF picks first (fast, ~1s)
-  try {
-    const etfData = await api('/api/strategies/etf-picks');
-    dateStr = etfData.date || '';
-    document.getElementById('picksDate').textContent = '数据日期: ' + (dateStr || '--');
-    html += renderEtfPicksHtml(etfData);
-    container.innerHTML = html + '<div class="loading-overlay" id="picksLoadingMore" style="padding:10px;font-size:0.85rem;color:var(--text-muted)"><span class="loading-spinner" style="width:14px;height:14px"></span> 加载筹码和ML数据...</div>';
-  } catch (e) {
-    container.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><p>ETF数据加载失败</p><div class="hint">' + e.message + '</div></div>';
-    return;
-  }
+const picksState = {};
 
-  // Load chip and ML in parallel
-  const [chipResult, mlResult] = await Promise.allSettled([
-    api('/api/strategies/chip-picks?date=' + encodeURIComponent(dateStr) + refreshParam).catch(e => ({error: e.message})),
-    api('/api/strategies/ml-picks?date=' + encodeURIComponent(dateStr) + refreshParam).catch(e => ({error: e.message}))
-  ]);
-
-  const chipData = chipResult.status === 'fulfilled' ? chipResult.value : null;
-  const mlData = mlResult.status === 'fulfilled' ? mlResult.value : null;
-
-  if (chipData && chipData.enhanced_chip) {
-    html += renderChipPicksHtml(chipData);
-  }
-  if (mlData && mlData.ml_stock) {
-    html += renderMlPicksHtml(mlData);
-  }
-
-  container.innerHTML = html || '<div class="empty-state"><div class="empty-icon">📭</div><p>暂无策略选股数据</p></div>';
-  picksLoaded = true;
+function buildCardSkeleton(cfg, index) {
+  var delay = index * 0.04;
+  return '<div class="strategy-card" id="card-' + cfg.id + '" ' +
+    'style="--card-accent:' + cfg.color + ';--card-accent-alpha:' + cfg.color + '22;animation-delay:' + delay + 's">' +
+    '<div class="strategy-card-header">' +
+      '<div class="strategy-card-title"><span class="accent-dot" style="background:' + cfg.color + '"></span> ' + cfg.title + '</div>' +
+      '<button class="strategy-card-refresh" onclick="loadStrategyCard(\'' + cfg.id + '\', true)" id="refresh-' + cfg.id + '">⟳</button>' +
+    '</div>' +
+    '<div class="strategy-card-loading" id="content-' + cfg.id + '">' +
+      '<span class="loading-spinner"></span> 加载中...' +
+    '</div>' +
+  '</div>';
 }
 
-function renderEtfPicksHtml(data) {
-  if (!data.etf_rotation) return '';
+function initPicksPanel() {
+  if (picksInitialized) return;
+  picksInitialized = true;
+  var container = document.getElementById('picksContent');
+  container.className = 'picks-container';
+  var html = '';
+  for (var i = 0; i < STRATEGY_ORDER.length; i++) {
+    var sid = STRATEGY_ORDER[i];
+    html += buildCardSkeleton(STRATEGY_CARDS[sid], i);
+  }
+  container.innerHTML = html;
+  for (var j = 0; j < STRATEGY_ORDER.length; j++) {
+    loadStrategyCard(STRATEGY_ORDER[j], false);
+  }
+}
+
+function refreshAllPicks() {
+  Object.keys(STRATEGY_CARDS).forEach(id => loadStrategyCard(id, true));
+}
+
+async function loadStrategyCard(strategyId, forceRefresh) {
+  const cfg = STRATEGY_CARDS[strategyId];
+  if (!cfg) return;
+  const contentEl = document.getElementById('content-' + cfg.id);
+  const refreshBtn = document.getElementById('refresh-' + cfg.id);
+  if (!contentEl) return;
+
+  if (refreshBtn) refreshBtn.classList.add('loading');
+  contentEl.innerHTML = '<span class="loading-spinner"></span> 加载中...';
+  contentEl.className = 'strategy-card-loading';
+
+  try {
+    let data;
+    if (cfg.apiType === 'new') {
+      // New API: direct URL, no dateParam/refreshParam
+      data = await api(cfg.apiUrl);
+      picksState[strategyId] = { loading: false, error: null, data: data };
+    } else {
+      // Legacy API: with date and refresh params
+      const refreshParam = forceRefresh ? '&refresh=true' : '';
+      let dateParam = '';
+      if (picksState.etf && picksState.etf.data && picksState.etf.data.date) {
+        dateParam = 'date=' + encodeURIComponent(picksState.etf.data.date);
+      }
+      const legacyUrl = '/api/strategies/' + strategyId + '-picks';
+      const sep = '?';
+      const url = legacyUrl + (dateParam ? '?' + dateParam : '') + refreshParam;
+      data = await api(url);
+      picksState[strategyId] = { loading: false, error: null, data: data };
+    }
+
+    if (strategyId === 'etf' && data.date) {
+      document.getElementById('picksDate').textContent = '数据日期: ' + data.date;
+    }
+
+    let html = '';
+    if (cfg.apiType === 'new') {
+      // Unwrap nested response: backend returns {strategyName: {picks, ...}}
+      const unwrapped = data[cfg.id] || data[Object.keys(data)[0]] || data;
+      html = renderGenericCardContent(unwrapped, cfg);
+    } else if (strategyId === 'etf') {
+      html = renderEtfCardContent(data);
+    } else if (strategyId === 'multifactor') {
+      html = renderMultifactorCardContent(data);
+    } else if (strategyId === 'ml') {
+      html = renderMlCardContent(data);
+    } else if (strategyId === 'chip') {
+      html = renderChipCardContent(data);
+    }
+
+    contentEl.className = '';
+    contentEl.innerHTML = html || '<div class="empty-state" style="padding:20px"><p>暂无数据</p></div>';
+  } catch (e) {
+    picksState[strategyId] = { loading: false, error: e.message, data: null };
+    contentEl.className = '';
+    contentEl.innerHTML = '<div class="strategy-card-error">' +
+      '<div style="margin-bottom:8px">' + (e.message || '加载失败') + '</div>' +
+      '<button class="strategy-card-refresh" onclick="loadStrategyCard(\'' + cfg.id + '\', true)">重试</button>' +
+    '</div>';
+  } finally {
+    if (refreshBtn) refreshBtn.classList.remove('loading');
+  }
+}
+
+function renderEtfCardContent(data) {
+  if (!data.etf_rotation) return '<div class="empty-state" style="padding:20px"><p>暂无ETF数据</p></div>';
   const etf = data.etf_rotation;
-  let html = '<div class="strategy-card">';
-  html += '<div class="strategy-card-header">';
-  html += '<div class="strategy-card-title"><span style="color:var(--accent-green)">◆</span> ETF轮动策略 <span class="strategy-card-desc">' + (etf.description || '') + '</span></div>';
-  html += '</div>';
+  let html = '<div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:10px">' + (etf.description || '') + '</div>';
   if (etf.picks && etf.picks.length > 0) {
     html += '<div style="overflow-x:auto">';
     for (const p of etf.picks) {
       const isTop = p.in_top_k;
       const momColor = p.momentum > 0 ? 'var(--accent-green)' : p.momentum < 0 ? 'var(--accent-red)' : 'var(--text-muted)';
       html += '<div class="pick-item">';
-      html += '<div class="pick-rank ' + (isTop ? 'top-k' : '') + '">' + (isTop ? '★' : '') + p.rank + '</div>';
+      html += '<div class="pick-rank ' + (isTop ? 'top-k' : '') + '">' + (isTop ? '\u2605' : '') + p.rank + '</div>';
       html += '<div><span class="pick-name">' + (p.name || '--') + '</span><span class="pick-symbol">' + p.symbol + '</span></div>';
       html += '<div class="pick-price">' + (p.close ? p.close.toFixed(4) : '--') + '</div>';
       html += '<div class="pick-momentum" style="color:' + momColor + '">' + (p.momentum != null ? (p.momentum > 0 ? '+' : '') + p.momentum.toFixed(2) + '%' : '--') + '</div>';
-      html += '<div>' + (isTop ? '<span class="strategy-tag tag-buy">✓ 买入</span>' : '') + '</div>';
+      html += '<div>' + (isTop ? '<span class="strategy-tag tag-buy">\u2713 买入</span>' : '') + (isTop ? ' <button class="btn btn-sm" style="background:var(--accent-green-dim);color:var(--accent-green);border-color:rgba(0,212,170,0.25);font-size:0.72rem;padding:2px 8px" onclick="openBuyModal(\'' + (p.symbol || '') + '\',\'' + (p.name || '').replace(/'/g, "\\'") + '\',' + (p.close || 0) + ',\'etf\')">买入</button>' : '') + '</div>';
       html += '</div>';
     }
     html += '</div>';
   } else {
     html += '<div class="empty-state" style="padding:20px"><p>暂无ETF数据</p></div>';
   }
-  html += '</div>';
   return html;
 }
 
-function renderChipPicksHtml(data) {
-  const chip = data.enhanced_chip;
-  let html = '<div class="strategy-card">';
-  html += '<div class="strategy-card-header">';
-  html += '<div class="strategy-card-title"><span style="color:var(--accent-blue)">◆</span> 增强筹码策略 <span class="strategy-card-desc">' + (chip.description || '') + '</span></div>';
-  html += '</div>';
-  html += '<div class="signal-group">';
-  html += '<div class="signal-list">';
-  html += '<div class="signal-list-title" style="color:var(--accent-green)">▲ 买入信号</div>';
-  if (chip.buy_signals && chip.buy_signals.length > 0) {
-    for (const s of chip.buy_signals) {
-      html += '<div class="signal-list-item"><span>' + (s.name || s.symbol || s.ts_code || '--') + '</span><span class="strategy-tag tag-buy" style="font-size:0.7rem">买入</span></div>';
+function renderMultifactorCardContent(data) {
+  if (!data.multifactor) return '<div class="empty-state" style="padding:20px"><p>暂无多因子数据</p></div>';
+  const mf = data.multifactor;
+  let html = '<div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:10px">' + (mf.description || '') + '</div>';
+  if (mf.picks && mf.picks.length > 0) {
+    html += '<div style="overflow-x:auto">';
+    for (const p of mf.picks) {
+      const isTop3 = p.rank <= 3;
+      const scoreNorm = Math.max(0, Math.min(100, ((p.score || 0) + 10) * 5));
+      const barColor = isTop3 ? 'var(--accent-green)' : 'var(--accent-blue)';
+      html += '<div class="pick-item">';
+      html += '<div class="pick-rank ' + (isTop3 ? 'top-k' : '') + '">' + p.rank + '</div>';
+      html += '<div><span class="pick-name">' + (p.name || '--') + '</span><span class="pick-symbol">' + (p.symbol || '') + '</span></div>';
+      html += '<div class="pick-price">' + (p.close ? p.close.toFixed(2) : '--') + '</div>';
+      html += '<div class="pick-momentum" style="color:' + (p.momentum_20d > 0 ? 'var(--accent-green)' : 'var(--accent-red)') + '">' + (p.momentum_20d != null ? (p.momentum_20d * 100).toFixed(1) + '%' : '--') + '</div>';
+      html += '<div style="min-width:60px"><div style="font-size:0.78rem;color:var(--text-muted)">' + (p.score != null ? p.score.toFixed(2) : '--') + '</div><div class="mf-score-bar"><div class="mf-score-bar-fill" style="width:' + scoreNorm + '%;background:' + barColor + '"></div></div></div>';
+      if (isTop3) {
+        html += '<div><button class="btn btn-sm" style="background:var(--accent-green-dim);color:var(--accent-green);border-color:rgba(0,212,170,0.25);font-size:0.72rem;padding:2px 8px" onclick="openBuyModal(\'' + (p.symbol || '') + '\',\'' + (p.name || '').replace(/'/g, "\\'") + '\',' + (p.close || 0) + ',\'multifactor\')">买入</button></div>';
+      }
+      html += '</div>';
     }
+    html += '</div>';
   } else {
-    html += '<div style="font-size:0.82rem;color:var(--text-muted);padding:4px 0">当前无信号</div>';
+    html += '<div class="empty-state" style="padding:20px"><p>暂无多因子数据</p></div>';
   }
-  html += '</div>';
-  html += '<div class="signal-list">';
-  html += '<div class="signal-list-title" style="color:var(--accent-red)">▼ 卖出信号</div>';
-  if (chip.sell_signals && chip.sell_signals.length > 0) {
-    for (const s of chip.sell_signals) {
-      html += '<div class="signal-list-item"><span>' + (s.name || s.symbol || s.ts_code || '--') + '</span><span class="strategy-tag tag-sell" style="font-size:0.7rem">卖出</span></div>';
-    }
-  } else {
-    html += '<div style="font-size:0.82rem;color:var(--text-muted);padding:4px 0">当前无信号</div>';
-  }
-  html += '</div>';
-  html += '</div></div>';
   return html;
 }
 
-function renderMlPicksHtml(data) {
+function renderMlCardContent(data) {
+  if (!data.ml_stock) return '<div class="empty-state" style="padding:20px"><p>暂无ML选股数据</p></div>';
   const ml = data.ml_stock;
-  let html = '<div class="strategy-card">';
-  html += '<div class="strategy-card-header">';
-  html += '<div class="strategy-card-title"><span style="color:var(--accent-yellow)">◆</span> ML选股 <span class="strategy-card-desc">' + (ml.description || '') + '</span></div>';
-  html += '</div>';
+  let html = '<div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:10px">' + (ml.description || '') + '</div>';
   if (ml.picks && ml.picks.length > 0) {
     html += '<div style="overflow-x:auto">';
     for (let i = 0; i < ml.picks.length; i++) {
       const p = ml.picks[i];
       const probColor = p.prob_up > 0.6 ? 'var(--accent-green)' : p.prob_up > 0.5 ? 'var(--accent-yellow)' : 'var(--text-muted)';
-      const predLabel = p.prediction === 1 ? '↑ 买入' : '↓ 观望';
+      const predLabel = p.prediction === 1 ? '\u2191 买入' : '\u2193 观望';
       const predTag = p.prediction === 1 ? 'tag-buy' : 'tag-neutral';
       html += '<div class="pick-item">';
       html += '<div class="pick-rank ' + (p.prediction === 1 ? 'top-k' : '') + '">' + (i + 1) + '</div>';
-      html += '<div><span class="pick-name">' + (p.name || '--') + '</span><span class="pick-symbol">' + (p.ts_code || '') + '</span></div>';
+      html += '<div><span class="pick-name">' + (p.name || '--') + '</span><span class="pick-symbol">' + (p.symbol || p.ts_code || '') + '</span></div>';
       html += '<div class="pick-price">' + (p.close ? p.close.toFixed(2) : '--') + '</div>';
       html += '<div class="pick-momentum" style="color:' + probColor + '">' + (p.prob_up != null ? (p.prob_up * 100).toFixed(0) + '%' : '--') + '</div>';
-      html += '<div><span class="strategy-tag ' + predTag + '">' + predLabel + '</span></div>';
+      html += '<div><span class="strategy-tag ' + predTag + '">' + predLabel + '</span>' + (p.prediction === 1 ? ' <button class="btn btn-sm" style="background:var(--accent-green-dim);color:var(--accent-green);border-color:rgba(0,212,170,0.25);font-size:0.72rem;padding:2px 8px" onclick="openBuyModal(\'' + (p.symbol || p.ts_code || '') + '\',\'' + (p.name || '').replace(/'/g, "\\'") + '\',' + (p.close || 0) + ',\'ml\')">买入</button>' : '') + '</div>';
       html += '</div>';
     }
     html += '</div>';
   } else {
     html += '<div class="empty-state" style="padding:20px"><p>暂无ML选股数据</p></div>';
   }
+  return html;
+}
+
+function renderChipCardContent(data) {
+  if (!data.enhanced_chip) return '<div class="empty-state" style="padding:20px"><p>暂无筹码数据</p></div>';
+  const chip = data.enhanced_chip;
+  let html = '<div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:10px">' + (chip.description || '') + '</div>';
+  html += '<div class="signal-group">';
+  html += '<div class="signal-list">';
+  html += '<div class="signal-list-title" style="color:var(--accent-green)">' + '\u25B2' + ' 买入信号</div>';
+  if (chip.buy_signals && chip.buy_signals.length > 0) {
+    for (const s of chip.buy_signals) {
+      html += '<div class="signal-list-item" style="flex-direction:column;align-items:flex-start;gap:4px">';
+      html += '<div style="display:flex;justify-content:space-between;width:100%;align-items:center"><span>' + (s.name || s.symbol || '--') + '</span><div style="display:flex;gap:4px;align-items:center"><span class="strategy-tag tag-buy" style="font-size:0.7rem">买入</span><button class="btn btn-sm" style="background:var(--accent-green-dim);color:var(--accent-green);border-color:rgba(0,212,170,0.25);font-size:0.72rem;padding:2px 8px" onclick="openBuyModal(\'' + (s.symbol || '') + '\',\'' + (s.name || '').replace(/'/g, "\\'") + '\',' + (s.price || 0) + ',\'chip\')">买入</button></div></div>';
+      html += '<div class="chip-info">';
+      if (s.price != null) html += '<span>' + s.price.toFixed(2) + '</span>';
+      if (s.zlcmq != null) html += '<span>ZLCMQ ' + s.zlcmq.toFixed(1) + '</span>';
+      if (s.zlcmq_max5 != null) html += '<span>' + '\u26F6' + ' ' + s.zlcmq_max5.toFixed(1) + '</span>';
+      html += '</div>';
+      if (s.reason) html += '<div style="font-size:0.72rem;color:var(--text-muted);margin-top:2px">' + s.reason + '</div>';
+      html += '</div>';
+    }
+  } else {
+    html += '<div style="font-size:0.82rem;color:var(--text-muted);padding:4px 0">当前无信号</div>';
+  }
+  html += '</div>';
+  html += '<div class="signal-list">';
+  html += '<div class="signal-list-title" style="color:var(--accent-red)">' + '\u25BC' + ' 卖出信号</div>';
+  if (chip.sell_signals && chip.sell_signals.length > 0) {
+    for (const s of chip.sell_signals) {
+      html += '<div class="signal-list-item" style="flex-direction:column;align-items:flex-start;gap:4px">';
+      html += '<div style="display:flex;justify-content:space-between;width:100%;align-items:center"><span>' + (s.name || s.symbol || '--') + '</span><span class="strategy-tag tag-sell" style="font-size:0.7rem">卖出</span></div>';
+      html += '<div class="chip-info">';
+      if (s.price != null) html += '<span>' + s.price.toFixed(2) + '</span>';
+      html += '</div>';
+      if (s.reason) html += '<div style="font-size:0.72rem;color:var(--text-muted);margin-top:2px">' + s.reason + '</div>';
+      html += '</div>';
+    }
+  } else {
+    html += '<div style="font-size:0.82rem;color:var(--text-muted);padding:4px 0">当前无信号</div>';
+  }
+  html += '</div>';
+  html += '</div>';
+  return html;
+}
+
+function renderGenericCardContent(data, cfg) {
+  const picks = data.picks || [];
+  const dateStr = data.date || '';
+  const strategyName = data.strategy || cfg.title;
+  let html = '';
+  if (dateStr) {
+    html += '<div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:10px">' + strategyName + ' · ' + dateStr + '</div>';
+  }
+  if (picks.length === 0) {
+    return '<div class="empty-state" style="padding:20px"><p>暂无选股数据</p></div>';
+  }
+  html += '<div style="overflow-x:auto">';
+  const topN = picks.slice(0, 5);
+  for (let i = 0; i < topN.length; i++) {
+    const p = topN[i];
+    const isTop3 = i < 3;
+    html += '<div class="pick-item">';
+    html += '<div class="pick-rank ' + (isTop3 ? 'top-k' : '') + '">' + (i + 1) + '</div>';
+    html += '<div><span class="pick-name">' + (p.name || '--') + '</span><span class="pick-symbol">' + (p.symbol || '') + '</span></div>';
+    html += '<div class="pick-price">' + (p.price != null || p.close != null ? parseFloat(p.price || p.close).toFixed(2) : '--') + '</div>';
+    html += '<div style="font-size:0.78rem;color:var(--text-muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + (p.reason || '') + '">' + (p.reason || '--') + '</div>';
+    html += '<div>';
+    if (isTop3) {
+      html += '<button class="btn btn-sm" style="background:var(--accent-green-dim);color:var(--accent-green);border-color:rgba(0,212,170,0.25);font-size:0.72rem;padding:2px 8px" onclick="openBuyModal(\'' + (p.symbol || '') + '\',\'' + (p.name || '').replace(/'/g, "\\'") + '\',' + (p.price || p.close || 0) + ',\'' + cfg.id + '\')">买入</button>';
+    }
+    html += '</div>';
+    html += '</div>';
+  }
   html += '</div>';
   return html;
 }
 
 // ════════════════════════════════════════════════════════════════
-// Backtest Comparison
-// ════════════════════════════════════════════════════════════════
-let stocksLoaded = false;
-let allStocks = [];
-let selectedStocks = [];
-let btChartInstance = null;
-let btResults = [];
-
-async function loadStocksList() {
-  try {
-    const data = await api('/api/stocks/list');
-    allStocks = data.stocks || [];
-    renderStockDropdown(allStocks);
-    stocksLoaded = true;
-  } catch (e) {
-    document.getElementById('btStockList').innerHTML = '<div style="padding:10px;color:var(--accent-red);font-size:0.82rem">加载股票列表失败</div>';
-  }
-}
-
-function renderStockDropdown(stocks) {
-  const listEl = document.getElementById('btStockList');
-  if (!stocks.length) {
-    listEl.innerHTML = '<div style="padding:10px;color:var(--text-muted);font-size:0.82rem">无匹配结果</div>';
-    return;
-  }
-  let html = '';
-  for (const s of stocks.slice(0, 50)) {
-    const isSelected = selectedStocks.some(st => st.code === s.code);
-    html += '<div class="bt-dropdown-item' + (isSelected ? ' selected' : '') + '" onclick="toggleStockSelection(\'' + s.code + '\',\'' + (s.name || '').replace(/'/g, "\\'") + '\')">';
-    html += '<span>' + s.code + ' · ' + s.name + '</span>';
-    html += isSelected ? '<span style="color:var(--accent-green)">✓</span>' : '';
-    html += '</div>';
-  }
-  if (stocks.length > 50) html += '<div style="padding:8px 12px;font-size:0.78rem;color:var(--text-muted)">还有 ' + (stocks.length - 50) + ' 只，请缩小搜索范围</div>';
-  listEl.innerHTML = html;
-}
-
-function filterStockList() {
-  const q = document.getElementById('btStockSearch').value.toLowerCase();
-  const filtered = allStocks.filter(s => s.code.toLowerCase().includes(q) || (s.name || '').toLowerCase().includes(q));
-  renderStockDropdown(filtered);
-}
-
-function toggleStockDropdown() {
-  const dd = document.getElementById('btStockDropdown');
-  dd.classList.toggle('open');
-  if (dd.classList.contains('open')) {
-    document.getElementById('btStockSearch').focus();
-    filterStockList();
-  }
-}
-
-function toggleStockSelection(code, name) {
-  const idx = selectedStocks.findIndex(s => s.code === code);
-  if (idx >= 0) {
-    selectedStocks.splice(idx, 1);
-  } else {
-    selectedStocks.push({ code, name });
-  }
-  renderSelectedStocks();
-  filterStockList();
-}
-
-function removeStock(code) {
-  selectedStocks = selectedStocks.filter(s => s.code !== code);
-  renderSelectedStocks();
-  filterStockList();
-}
-
-function renderSelectedStocks() {
-  const el = document.getElementById('btStockSelect');
-  if (!selectedStocks.length) {
-    el.innerHTML = '<span class="bt-placeholder">搜索并选择股票...</span>';
-    return;
-  }
-  let html = '';
-  for (const s of selectedStocks) {
-    html += '<span class="bt-tag">' + s.name + '<span class="bt-tag-remove" onclick="event.stopPropagation();removeStock(\'' + s.code + '\')">×</span></span>';
-  }
-  el.innerHTML = html;
-}
-
-document.addEventListener('click', function(e) {
-  const wrap = document.querySelector('.bt-multiselect-wrap');
-  const dd = document.getElementById('btStockDropdown');
-  if (wrap && dd && !wrap.contains(e.target)) {
-    dd.classList.remove('open');
-  }
-});
-
-async function runBacktestCompare() {
-  if (!selectedStocks.length) { showToast('请至少选择一只股票', 'error'); return; }
-
-  const btn = document.getElementById('btnRunCompare');
-  btn.disabled = true;
-  btn.innerHTML = '<span class="loading-spinner" style="width:14px;height:14px;border-width:2px"></span> 运行中...';
-
-  const startDate = document.getElementById('btStartDate').value || '20230101';
-  const symbols = selectedStocks.map(s => s.code).join(',');
-  const resultsWrap = document.getElementById('btResultsWrap');
-  resultsWrap.style.display = 'none';
-
-  try {
-    const data = await api('/api/backtest/compare?symbols=' + encodeURIComponent(symbols) + '&start_date=' + startDate.replace(/-/g, ''));
-    btResults = data.results || [];
-    renderBacktestResults(btResults);
-    resultsWrap.style.display = 'block';
-  } catch (e) {
-    console.error('Backtest compare failed:', e);
-  } finally {
-    btn.disabled = false;
-    btn.innerHTML = '<span>▶</span> 运行对比';
-  }
-}
-
-function renderBacktestResults(results) {
-  const tbody = document.getElementById('btResultsBody');
-  const sorted = [...results].sort((a, b) => (b.total_return || 0) - (a.total_return || 0));
-
-  let html = '';
-  for (const r of sorted) {
-    const retColor = (r.total_return || 0) >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
-    const ddColor = 'var(--accent-red)';
-    const winColor = (r.win_rate || 0) >= 50 ? 'var(--accent-green)' : 'var(--text-secondary)';
-    html += '<div class="bt-result-row" style="cursor:pointer" onclick="loadBacktestChart(\'' + (r.strategy || '') + '\',\'' + (r.symbol || r.ts_code || '') + '\')">';
-    html += '<span style="font-weight:600">' + (r.strategy || '--') + '</span>';
-    html += '<span>' + (r.name || r.symbol || '--') + '</span>';
-    html += '<span style="color:' + retColor + ';font-weight:600">' + fmtPct(r.total_return) + '</span>';
-    html += '<span>' + fmt(r.sharpe) + '</span>';
-    html += '<span style="color:' + ddColor + '">' + fmtPct(r.max_drawdown) + '</span>';
-    html += '<span style="color:' + winColor + '">' + (r.win_rate != null ? r.win_rate.toFixed(0) + '%' : '--') + '</span>';
-    html += '</div>';
-  }
-  tbody.innerHTML = html;
-
-  renderBacktestChartSelector(sorted);
-}
-
-function renderBacktestChartSelector(results) {
-  const el = document.getElementById('btChartSelector');
-  const strategies = [...new Set(results.map(r => r.strategy))];
-  let html = '';
-  for (const s of strategies) {
-    html += '<span class="bt-chip' + (s === strategies[0] ? ' active' : '') + '" onclick="selectBtStrategy(this, \'' + s + '\')">' + s + '</span>';
-  }
-  el.innerHTML = html;
-
-  if (strategies.length > 0 && results.length > 0) {
-    loadBacktestChart(strategies[0], results[0].symbol || results[0].ts_code || '');
-  }
-}
-
-function selectBtStrategy(chipEl, strategy) {
-  document.querySelectorAll('.bt-chip').forEach(c => c.classList.remove('active'));
-  chipEl.classList.add('active');
-  const match = btResults.find(r => r.strategy === strategy);
-  if (match) loadBacktestChart(strategy, match.symbol || match.ts_code || '');
-}
-
-async function loadBacktestChart(strategy, symbol) {
-  const startDate = document.getElementById('btStartDate').value || '20230101';
-  try {
-    const data = await api('/api/backtest/run?strategy=' + encodeURIComponent(strategy) + '&symbol=' + encodeURIComponent(symbol) + '&start_date=' + startDate.replace(/-/g, ''));
-    renderBtChart(data);
-  } catch (e) {
-    console.error('Backtest chart load failed:', e);
-  }
-}
-
-function renderBtChart(data) {
-  const canvas = document.getElementById('btChart');
-  if (btChartInstance) btChartInstance.destroy();
-  if (!data.portfolio_dates || !data.portfolio_dates.length) {
-    canvas.style.display = 'none';
-    return;
-  }
-  canvas.style.display = 'block';
-
-  const labels = data.portfolio_dates.map(d => d.substring(5));
-  const retPct = data.portfolio_values.map(v => ((v / data.portfolio_values[0]) - 1) * 100);
-
-  btChartInstance = new Chart(canvas, {
-    type: 'line',
-    data: {
-      labels: labels,
-      datasets: [{
-        label: (data.strategy || '') + ' · ' + (data.name || data.ts_code || ''),
-        data: retPct,
-        borderColor: '#00d4aa',
-        backgroundColor: 'rgba(0,212,170,0.08)',
-        fill: true,
-        tension: 0.3,
-        borderWidth: 2,
-        pointRadius: 0,
-        pointHoverRadius: 4,
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        legend: {
-          labels: { color: '#8b8fa3', usePointStyle: true, pointStyle: 'line', font: { size: 12 } }
-        },
-        tooltip: {
-          backgroundColor: '#1a1d29',
-          borderColor: '#2a2e3e',
-          borderWidth: 1,
-          titleColor: '#e8eaed',
-          bodyColor: '#8b8fa3',
-          padding: 10,
-          callbacks: {
-            label: function(ctx) { return ctx.dataset.label + ': ' + fmtPct(ctx.parsed.y); }
-          }
-        }
-      },
-      scales: {
-        x: {
-          grid: { color: 'rgba(42,46,62,0.5)', drawBorder: false },
-          ticks: { color: '#5a5e72', font: { size: 11 }, maxTicksLimit: 12 }
-        },
-        y: {
-          grid: { color: 'rgba(42,46,62,0.5)', drawBorder: false },
-          ticks: {
-            color: '#5a5e72', font: { size: 11 },
-            callback: function(v) { return v.toFixed(1) + '%'; }
-          }
-        }
-      }
-    }
-  });
-}
-
-// ════════════════════════════════════════════════════════════════
-// Dynamic Backtest
+// Backtest
 // ════════════════════════════════════════════════════════════════
 let dynChartInstance = null;
 let dynCurrentResult = null;
@@ -2658,7 +2823,7 @@ async function loadDynamicDelivery(runId) {
 function downloadDelivery() {
   if (!dynCurrentResult) return;
   const runId = dynCurrentResult.run_id;
-  window.open('/api/backtest/' + runId + '/delivery?format=csv', '_blank');
+  window.open('/api/backtest/' + runId + '/delivery?fmt=csv', '_blank');
 }
 
 // ════════════════════════════════════════════════════════════════
