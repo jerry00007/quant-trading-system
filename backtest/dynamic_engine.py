@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Callable
 
 import numpy as np
 import pandas as pd
+from scipy.stats import percentileofscore
 
 from config.settings import config
 
@@ -195,6 +196,13 @@ class DynamicBacktestEngine:
             "etf_rotation": 0.10,
             "chip": 0.08,
             "ml": 0.10,
+            "vol_breakout": 0.08,
+            "dragon_first_yin": 0.05,
+            "trend_ma": 0.10,
+            "top_bottom": 0.08,
+            "bollinger_break": 0.08,
+            "rsi_momentum": 0.08,
+            "macd_cross": 0.10,
         }
 
     def _get_trailing_stop(self, strategy_name: str) -> float:
@@ -302,7 +310,9 @@ class DynamicBacktestEngine:
             df["vol_ma20"] > 0, df["vol"] / df["vol_ma20"], 1.0
         )
 
-        df["high20"] = g["high"].transform(lambda s: s.rolling(20, min_periods=1).max())
+        df["high20"] = g["high"].transform(
+            lambda s: s.rolling(20, min_periods=1).max().shift(1)
+        )
         df["price_to_high20"] = np.where(
             df["high20"] > 0, df["close"] / df["high20"] - 1.0, 0.0
         )
@@ -364,9 +374,64 @@ class DynamicBacktestEngine:
         df["future_close_5d"] = g["close"].transform(lambda s: s.shift(-5))
         df["label_5d_up"] = (df["future_close_5d"] > df["close"]).astype(np.float64)
 
+        self._build_top_bottom_features(df, g)
+        self._build_macd_features(df)
+        self._build_bollinger_features(df)
+
         df.drop(columns=["delta", "gain", "loss"], inplace=True, errors="ignore")
 
         self._feat = df
+
+    def _build_top_bottom_features(self, df: pd.DataFrame, g):
+        df["ma13"] = g["close"].transform(
+            lambda s: s.rolling(13, min_periods=13).mean()
+        )
+        df["var4_tb"] = np.where(
+            df["ma13"] > 0,
+            100.0 - np.abs((df["close"] - df["ma13"]) / df["ma13"] * 100.0),
+            50.0,
+        )
+        df["varb_tb"] = (
+            g["close"]
+            .transform(
+                lambda s: s.rolling(250, min_periods=20).apply(
+                    lambda x: percentileofscore(x, x[-1]), raw=True
+                )
+            )
+            .fillna(50.0)
+        )
+        df["score_tb"] = df["var4_tb"] - df["varb_tb"]
+        df["score_max5_prev_tb"] = g["score_tb"].transform(
+            lambda s: s.shift(1).rolling(5, min_periods=1).max()
+        )
+
+    def _build_macd_features(self, df: pd.DataFrame):
+        g = df.groupby("ts_code", sort=False)
+        ema_fast = g["close"].transform(lambda s: s.ewm(span=15, adjust=False).mean())
+        ema_slow = g["close"].transform(lambda s: s.ewm(span=26, adjust=False).mean())
+        df["dif"] = ema_fast - ema_slow
+        df["dea"] = g["dif"].transform(lambda s: s.ewm(span=13, adjust=False).mean())
+        df["macd_hist"] = 2.0 * (df["dif"] - df["dea"])
+        df["prev_dif"] = g["dif"].shift(1)
+        df["prev_dea"] = g["dea"].shift(1)
+
+    def _build_bollinger_features(self, df: pd.DataFrame):
+        g = df.groupby("ts_code", sort=False)
+        df["bb_mid"] = g["close"].transform(
+            lambda s: s.rolling(25, min_periods=25).mean()
+        )
+        df["bb_std"] = g["close"].transform(
+            lambda s: s.rolling(25, min_periods=25).std()
+        )
+        df["bb_upper"] = df["bb_mid"] + 2.5 * df["bb_std"]
+        df["bb_lower"] = df["bb_mid"] - 2.5 * df["bb_std"]
+        df["prev_close"] = g["close"].shift(1)
+        df["prev_lower"] = g["bb_lower"].shift(1)
+        df["dist_to_lower"] = np.where(
+            df["bb_lower"] != 0,
+            (df["close"] - df["bb_lower"]) / df["bb_lower"],
+            0.0,
+        )
 
     def _load_daily_data(
         self, codes: List[str], market_conn: sqlite3.Connection
@@ -376,7 +441,7 @@ class DynamicBacktestEngine:
 
         placeholders = ",".join(["?" for _ in codes])
         query = f"""
-            SELECT ts_code, trade_date, open, high, low, close, vol
+            SELECT ts_code, trade_date, open, high, low, close, vol, pct_chg
             FROM daily_quotes
             WHERE ts_code IN ({placeholders})
             AND '{self.config.start_date}' <= trade_date AND trade_date <= '{self.config.end_date}'
@@ -520,6 +585,20 @@ class DynamicBacktestEngine:
             return self._multifactor_strategy
         elif strategy_name == "etf_rotation":
             return self._etf_rotation_strategy
+        elif strategy_name == "vol_breakout":
+            return self._vol_breakout_strategy
+        elif strategy_name == "dragon_first_yin":
+            return self._dragon_first_yin_strategy
+        elif strategy_name == "trend_ma":
+            return self._trend_ma_strategy
+        elif strategy_name == "top_bottom":
+            return self._top_bottom_strategy
+        elif strategy_name == "bollinger_break":
+            return self._bollinger_break_strategy
+        elif strategy_name == "rsi_momentum":
+            return self._rsi_momentum_strategy
+        elif strategy_name == "macd_cross":
+            return self._macd_cross_strategy
         else:
             return self._ma_strategy
 
@@ -772,6 +851,327 @@ class DynamicBacktestEngine:
 
         day = day.sort_values("score", ascending=False)
         return day["ts_code"].head(top_k).tolist()
+
+    # ------------------------------------------------------------------
+    #  New strategy adapters
+    # ------------------------------------------------------------------
+
+    def _vol_breakout_strategy(
+        self,
+        daily_data: pd.DataFrame,
+        trading_dates: List[str],
+        date_idx: int,
+        top_k: int,
+    ) -> List[str]:
+        """爆量突破策略 (VolumeBreakoutStrategy)
+
+        Logic: low volatility + volume spike + breakout above 20-day high and MA20.
+        Conditions:
+            volatility_5d < 0.15  (consolidation)
+            vol > vol_ma20 * 2.0  (volume explosion)
+            close > high20        (new 20-day high breakout)
+            close > ma20          (above medium-term average)
+        Sort by volume_ratio descending.
+        Source: strategies/fengmang_strategies.py VolumeBreakoutStrategy
+        """
+        date = trading_dates[date_idx]
+        feat = self._feat
+        mask = feat["trade_date"] == date
+        day = feat.loc[mask].copy()
+
+        day = day[day["cumcount"] >= 25]
+        if day.empty:
+            return []
+
+        # Apply conditions
+        vol_mult = 2.0
+        signals = day[
+            (day["volatility_5d"] < 0.15)
+            & (day["vol"] > day["vol_ma20"] * vol_mult)
+            & (day["close"] > day["high20"])
+            & (day["close"] > day["ma20"])
+        ]
+        if signals.empty:
+            return []
+
+        signals = signals.sort_values("volume_ratio", ascending=False)
+        return signals["ts_code"].head(top_k).tolist()
+
+    def _dragon_first_yin_strategy(
+        self,
+        daily_data: pd.DataFrame,
+        trading_dates: List[str],
+        date_idx: int,
+        top_k: int,
+    ) -> List[str]:
+        """龙头首阴策略 (DragonFirstYinStrategy)
+
+        Logic: stock hit limit-up yesterday, today pulled back (yin candle)
+        but close still above yesterday's open.
+        Conditions:
+            yesterday pct_chg > 9.5%   (limit-up)
+            today close < open          (yin candle)
+            today close > yesterday open (support held)
+        Sort by pct_chg descending (strongest limit-up first).
+        Source: strategies/fengmang_strategies.py DragonFirstYinStrategy
+        """
+        date = trading_dates[date_idx]
+        feat = self._feat
+        mask = feat["trade_date"] == date
+        day = feat.loc[mask].copy()
+
+        day = day[day["cumcount"] >= 40]
+        if day.empty:
+            return []
+
+        # pct_chg is NOT in feat — need to get it from daily_data
+        if date_idx < 1:
+            return []
+
+        prev_date = trading_dates[date_idx - 1]
+        yesterday = daily_data[daily_data["trade_date"] == prev_date][
+            ["ts_code", "pct_chg", "open"]
+        ].copy()
+        yesterday = yesterday.rename(
+            columns={"pct_chg": "prev_pct_chg", "open": "prev_open"}
+        )
+
+        today = daily_data[daily_data["trade_date"] == date][
+            ["ts_code", "open", "close"]
+        ].copy()
+
+        merged = today.merge(yesterday, on="ts_code", how="inner")
+        if merged.empty:
+            return []
+
+        limit_pct = 9.5  # threshold for limit-up (pct_chg is already in percent form)
+        yin_pct = -0.03
+
+        # Yesterday limit-up, today yin candle with support
+        signals = merged[
+            (merged["prev_pct_chg"] > limit_pct)
+            & (merged["close"] < merged["open"])  # yin candle
+            & (merged["close"] > merged["prev_open"])  # support held
+        ]
+        if signals.empty:
+            return []
+
+        # Merge back with feat for cumcount filter
+        valid_codes = set(signals["ts_code"].values)
+        day_filtered = day[day["ts_code"].isin(valid_codes)]
+        if day_filtered.empty:
+            return []
+
+        # Sort by pct_chg descending
+        signals = signals.sort_values("prev_pct_chg", ascending=False)
+        return signals["ts_code"].head(top_k).tolist()
+
+    def _trend_ma_strategy(
+        self,
+        daily_data: pd.DataFrame,
+        trading_dates: List[str],
+        date_idx: int,
+        top_k: int,
+    ) -> List[str]:
+        """均线趋势跟踪策略 (TrendMAStrategy)
+
+        Logic: MA5 > MA10 > MA20 > MA60 bull alignment forming for the first time.
+        Since feat only has ma5/ma20/ma60, we compute ma10 inline from feat's
+        sorted structure, then check alignment today but NOT yesterday (first time).
+        Conditions:
+            ma5 > ma10 > ma20 > ma60  (bull alignment)
+            NOT (prev_ma5 > prev_ma10 > prev_ma20 > prev_ma60)  (first time)
+        Sort by ma5_to_ma20 ratio.
+        Source: strategies/fengmang_strategies.py TrendMAStrategy
+        """
+        date = trading_dates[date_idx]
+        feat = self._feat
+        mask = feat["trade_date"] == date
+        day = feat.loc[mask].copy()
+
+        day = day[day["cumcount"] >= 35]
+        if day.empty:
+            return []
+
+        # Compute ma10 inline: feat is sorted by (ts_code, trade_date)
+        codes = day["ts_code"].values
+        feat_sub = feat[feat["ts_code"].isin(codes)][
+            ["ts_code", "trade_date", "close"]
+        ].copy()
+        feat_sub = feat_sub.sort_values(["ts_code", "trade_date"])
+        feat_sub["ma10"] = feat_sub.groupby("ts_code")["close"].transform(
+            lambda s: s.rolling(10, min_periods=10).mean()
+        )
+        feat_sub["prev_ma10"] = feat_sub.groupby("ts_code")["ma10"].transform(
+            lambda s: s.shift(1)
+        )
+        # Get prev ma5, ma20, ma60 from feat
+        feat_prev = feat[feat["ts_code"].isin(codes)].copy()
+        feat_prev["prev_ma5"] = feat_prev.groupby("ts_code")["ma5"].transform(
+            lambda s: s.shift(1)
+        )
+        feat_prev["prev_ma20"] = feat_prev.groupby("ts_code")["ma20"].transform(
+            lambda s: s.shift(1)
+        )
+        feat_prev["prev_ma60"] = feat_prev.groupby("ts_code")["ma60"].transform(
+            lambda s: s.shift(1)
+        )
+
+        # Merge ma10 and prev values into day
+        ma10_map = feat_sub[feat_sub["trade_date"] == date][
+            ["ts_code", "ma10"]
+        ].dropna()
+        prev_ma10_map = feat_sub[feat_sub["trade_date"] == date][
+            ["ts_code", "prev_ma10"]
+        ].dropna()
+        prev_feat_map = feat_prev[feat_prev["trade_date"] == date][
+            ["ts_code", "prev_ma5", "prev_ma20", "prev_ma60"]
+        ].dropna()
+
+        day = day.merge(ma10_map, on="ts_code", how="left")
+        day = day.merge(prev_ma10_map, on="ts_code", how="left")
+        day = day.merge(prev_feat_map, on="ts_code", how="left")
+        day = day.dropna(
+            subset=["ma10", "prev_ma10", "prev_ma5", "prev_ma20", "prev_ma60"]
+        )
+        if day.empty:
+            return []
+
+        # Today: bull alignment
+        bull_today = (
+            (day["ma5"] > day["ma10"])
+            & (day["ma10"] > day["ma20"])
+            & (day["ma20"] > day["ma60"])
+        )
+        # Yesterday: NOT bull alignment (first time)
+        bull_yesterday = (
+            (day["prev_ma5"] > day["prev_ma10"])
+            & (day["prev_ma10"] > day["prev_ma20"])
+            & (day["prev_ma20"] > day["prev_ma60"])
+        )
+
+        signals = day[bull_today & ~bull_yesterday]
+        if signals.empty:
+            return []
+
+        signals = signals.sort_values("ma5_to_ma20", ascending=False)
+        return signals["ts_code"].head(top_k).tolist()
+
+    def _top_bottom_strategy(
+        self,
+        daily_data: pd.DataFrame,
+        trading_dates: List[str],
+        date_idx: int,
+        top_k: int,
+    ) -> List[str]:
+        date = trading_dates[date_idx]
+        feat = self._feat
+        day = feat[feat["trade_date"] == date].copy()
+        if day.empty:
+            return []
+        day = day[day["cumcount"] >= 250].dropna(subset=["score_tb"])
+        if day.empty:
+            return []
+        signals = day[
+            (day["score_tb"] > 10) & (day["score_tb"] > day["score_max5_prev_tb"])
+        ]
+        if signals.empty:
+            return []
+        return (
+            signals.sort_values("score_tb", ascending=False)["ts_code"]
+            .head(top_k)
+            .tolist()
+        )
+
+    def _bollinger_break_strategy(
+        self,
+        daily_data: pd.DataFrame,
+        trading_dates: List[str],
+        date_idx: int,
+        top_k: int,
+    ) -> List[str]:
+        date = trading_dates[date_idx]
+        feat = self._feat
+        day = feat[feat["trade_date"] == date].copy()
+        if day.empty:
+            return []
+        day = day.dropna(subset=["bb_lower", "prev_close", "prev_lower"])
+        if day.empty:
+            return []
+        day = day[day["cumcount"] >= 30]
+        if day.empty:
+            return []
+        signals = day[
+            (day["prev_close"] > day["prev_lower"]) & (day["close"] <= day["bb_lower"])
+        ]
+        if signals.empty:
+            return []
+        return (
+            signals.sort_values("dist_to_lower", ascending=True)["ts_code"]
+            .head(top_k)
+            .tolist()
+        )
+
+    def _rsi_momentum_strategy(
+        self,
+        daily_data: pd.DataFrame,
+        trading_dates: List[str],
+        date_idx: int,
+        top_k: int,
+    ) -> List[str]:
+        """RSI动量策略 (RSIMomentumStrategy)
+
+        Logic: Buy when RSI is oversold (< 25).
+        RSI_14 is precomputed in feat.
+        Conditions:
+            rsi_14 < 25  (oversold)
+        Sort by rsi_14 ascending (lower RSI = stronger buy signal).
+        Source: strategies/momentum_strategies.py RSIMomentumStrategy
+        """
+        date = trading_dates[date_idx]
+        feat = self._feat
+        mask = feat["trade_date"] == date
+        day = feat.loc[mask].copy()
+
+        day = day[day["cumcount"] >= 20]
+        if day.empty:
+            return []
+
+        signals = day[day["rsi_14"] < 25]
+        if signals.empty:
+            return []
+
+        signals = signals.sort_values("rsi_14", ascending=True)
+        return signals["ts_code"].head(top_k).tolist()
+
+    def _macd_cross_strategy(
+        self,
+        daily_data: pd.DataFrame,
+        trading_dates: List[str],
+        date_idx: int,
+        top_k: int,
+    ) -> List[str]:
+        date = trading_dates[date_idx]
+        feat = self._feat
+        day = feat[feat["trade_date"] == date].copy()
+        if day.empty:
+            return []
+        day = day.dropna(subset=["prev_dif", "prev_dea", "dif", "dea"])
+        if day.empty:
+            return []
+        day = day[day["cumcount"] >= 40]
+        if day.empty:
+            return []
+        signals = day[(day["prev_dif"] <= day["prev_dea"]) & (day["dif"] > day["dea"])]
+        if signals.empty:
+            return []
+        signals = signals.copy()
+        signals["macd_abs"] = np.abs(signals["macd_hist"].values)
+        return (
+            signals.sort_values("macd_abs", ascending=False)["ts_code"]
+            .head(top_k)
+            .tolist()
+        )
 
     def _apply_risk_filters(
         self,
