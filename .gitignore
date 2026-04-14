@@ -33,6 +33,8 @@ env/
 
 # Data
 data/sqlite/*.db
+data/ml_models/
+data/stocks.db
 *.sqlite
 *.sqlite3
 
