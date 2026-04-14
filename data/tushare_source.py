@@ -100,6 +100,8 @@ class TushareDataSource(BaseDataSource):
     def get_index_quotes(
         self,
         symbol: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
         period: str = "daily"
     ) -> pd.DataFrame:
         try:

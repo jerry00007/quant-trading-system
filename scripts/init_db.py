@@ -97,6 +97,35 @@ def init_database():
             UNIQUE(ts_code, ann_date)
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS stock_valuation (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts_code TEXT NOT NULL,
+            trade_date TEXT NOT NULL,
+            total_market_cap REAL,
+            circulating_market_cap REAL,
+            pe_ttm REAL,
+            pb REAL,
+            ps_ttm REAL,
+            pcf_nc_ttm REAL,
+            UNIQUE(ts_code, trade_date)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS stock_fundamental (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts_code TEXT NOT NULL,
+            report_date TEXT NOT NULL,
+            roe REAL,
+            roe_avg REAL,
+            gross_margin REAL,
+            net_margin REAL,
+            debt_to_assets REAL,
+            current_ratio REAL,
+            quick_ratio REAL,
+            UNIQUE(ts_code, report_date)
+        )
+        """,
         "CREATE INDEX IF NOT EXISTS idx_daily_quotes_ts_code ON daily_quotes(ts_code)",
         "CREATE INDEX IF NOT EXISTS idx_daily_quotes_trade_date ON daily_quotes(trade_date)",
         "CREATE INDEX IF NOT EXISTS idx_minute_quotes_ts_code ON minute_quotes(ts_code)",
@@ -105,6 +134,10 @@ def init_database():
         "CREATE INDEX IF NOT EXISTS idx_indicators_trade_date ON indicators(trade_date)",
         "CREATE INDEX IF NOT EXISTS idx_financial_ts_code ON financial(ts_code)",
         "CREATE INDEX IF NOT EXISTS idx_financial_ann_date ON financial(ann_date)",
+        "CREATE INDEX IF NOT EXISTS idx_stock_valuation_ts_code ON stock_valuation(ts_code)",
+        "CREATE INDEX IF NOT EXISTS idx_stock_valuation_trade_date ON stock_valuation(trade_date)",
+        "CREATE INDEX IF NOT EXISTS idx_stock_fundamental_ts_code ON stock_fundamental(ts_code)",
+        "CREATE INDEX IF NOT EXISTS idx_stock_fundamental_report_date ON stock_fundamental(report_date)",
     ]
 
     with engine.connect() as conn:
@@ -113,7 +146,7 @@ def init_database():
         conn.commit()
 
     print(f"数据库初始化完成: {config.DB_PATH}")
-    print(f"已创建表: stock_list, daily_quotes, minute_quotes, indicators, financial")
+    print(f"已创建表: stock_list, daily_quotes, minute_quotes, indicators, financial, stock_valuation, stock_fundamental")
 
 
 if __name__ == "__main__":
