@@ -1,37 +1,34 @@
-# A股量化交易系统
+# A股量化交易系统 v2.0
 
-基于 Python 的个人量化交易系统，支持数据获取、策略回测、实时监控等功能。
+基于 Python 的个人量化交易系统，支持数据获取、策略回测、实时监控、个股分析等功能。
 
 ## 项目结构
 
 ```
 jiaoyixitong/
 ├── config/               # 配置管理
-├── data/                # 数据层
-│   ├── base_source.py      # 数据源抽象接口
+│   ├── settings.py          # 配置管理
+│   └── scheduler.py          # 定时任务调度器
+├── data/                   # 数据层
+│   ├── base_source.py       # 数据源抽象接口
 │   ├── downloader.py         # AKShare 实现
-│   ├── tushare_source.py   # Tushare 实现
-│   ├── source_manager.py    # 多数据源管理器
-│   ├── storage.py           # 数据存储
-│   └── __init__.py
-├── backtest/             # 回测模块
-│   ├── simple_backtest.py  # 简单回测引擎
-│   └── __init__.py
-├── strategies/            # 策略模块
+│   ├── tushare_source.py    # Tushare 实现
+│   ├── netease_163_source.py # 网易163实现
+│   ├── source_manager.py     # 多数据源管理器
+│   └── storage.py           # 数据存储
+├── strategies/             # 策略模块
+│   ├── registry.py          # 策略注册表
 │   ├── ma_strategy.py       # 双均线交叉策略
-│   └── __init__.py
-├── examples/              # 示例代码
-│   ├── backtest_example.py  # 回测示例
-│   └── data_source_demo.py # 数据源示例
-├── scripts/               # 工具脚本
-│   ├── init_db.py          # 数据库初始化
-│   ├── batch_download.py    # 批量下载
-│   └── __init__.py
-├── tests/                # 测试
-├── logs/                 # 日志文件
-├── main.py               # CLI 入口
-├── requirements.txt        # 依赖
-└── README.md             # 文档
+│   ├── etf_rotation_strategy.py # ETF轮动策略
+│   ├── enhanced_chip_strategy.py # 增强筹码策略
+│   ├── ml_stock_strategy.py # ML选股策略
+│   ├── multifactor_strategy.py # 多因子选股策略
+│   └── factors.py           # 技术因子库
+├── web/                    # Web服务
+│   └── app.py              # FastAPI后端
+├── scripts/                # 工具脚本
+├── main.py                 # CLI入口
+└── requirements.txt         # 依赖
 ```
 
 ## 快速开始
@@ -48,36 +45,49 @@ pip install -r requirements.txt
 python scripts/init_db.py
 ```
 
-### 3. 使用 CLI 工具
+### 3. 启动Web服务
 
 ```bash
-python main.py init                 # 初始化数据库
-python main.py daily 600000      # 拉取日线数据
-python main.py query 600000       # 查询数据
+bash start.sh
 ```
+
+服务地址: http://localhost:8787
 
 ## 功能特性
 
-- [x] 数据获取（AKShare）
-- [x] 本地数据存储（SQLite）
-- [x] 数据获取
-- [x] 双数据源支持（AKShare + Tushare）
-- [x] 数据源抽象层（统一接口）
-- [x] 数据源管理器（优先级切换）
-- [x] 策略框架（双均线交叉）
-- [x] 回测引擎（简单回测）
-- [ ] 技术指标计算
-- [ ] 高级策略
-- [ ] 参数优化
-- [ ] 实时监控
+### 数据层
+- [x] 数据获取（AKShare + Tushare 双数据源）
+- [x] 定时任务调度（APScheduler）
+- [x] 批量数据插入优化
+- [x] 数据缓存机制
+
+### 策略层
+- [x] 策略注册机制（统一接口 + Pydantic验证）
+- [x] ETF轮动策略
+- [x] 增强筹码策略
+- [x] ML选股策略（支持模型持久化）
+- [x] 多因子选股策略
+- [x] 技术因子库
+
+### 分析层
+- [x] 个股详情API
+- [x] 技术指标API（MA/MACD/RSI/KDJ/CCI/布林带）
+- [x] K线数据API
+- [x] 市场状态检测
+
+### 回测
+- [x] 简单回测引擎
+- [x] 多策略对比
+- [x] 绩效指标计算
 
 ## 技术栈
 
 - Python 3.10+
 - SQLite / SQLAlchemy
+- FastAPI + Uvicorn
+- APScheduler（定时任务）
 - AKShare / Tushare（数据源）
-- Click（CLI）
-- Rich（终端美化）
+- scikit-learn（ML选股）
 - Pandas / NumPy
 
 ## 数据源说明

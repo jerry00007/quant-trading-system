@@ -9,6 +9,13 @@ numpy>=1.24.0
 # 数据库
 sqlalchemy>=2.0.0
 
+# 定时任务
+apscheduler>=3.10.0
+
+# Web服务
+fastapi>=0.100.0
+uvicorn>=0.23.0
+
 # CLI 工具
 click>=8.1.0
 rich>=13.0.0
